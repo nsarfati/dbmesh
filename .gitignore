@@ -1,0 +1,36 @@
+# Local environment and credentials; keep the example in version control.
+.env
+.env.*
+!.env.example
+
+# Go binaries, test executables and coverage output.
+/dbmesh
+/dbmesh.exe
+/routepg
+/routepg.exe
+/bin/
+/dist/
+*.test
+*.test.exe
+/coverage/
+/coverage.out
+/coverage.html
+/coverage*.prof
+/go.work
+/go.work.sum
+
+# Local editor and agent configuration.
+.vscode/
+.idea/
+.agents/
+.codex/
+AGENTS.md
+*.swp
+*.swo
+*~
+
+# Local runtime files and OS metadata.
+*.log
+/tmp/
+.DS_Store
+Thumbs.db
