@@ -20,12 +20,17 @@ import (
 )
 
 type Server struct {
-	cfg    config.Config
-	logger *slog.Logger
+	cfg     config.Config
+	logger  *slog.Logger
+	monitor *upstream.Monitor
 }
 
 func NewServer(cfg config.Config, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, logger: logger}
+	if cfg.ReaderPolicy.CheckInterval == 0 {
+		cfg.ReaderPolicy = config.DefaultReaderPolicy()
+	}
+	return &Server{cfg: cfg, logger: logger,
+		monitor: upstream.NewMonitor(cfg.WriterURL, cfg.ReaderURLs, cfg.ReaderPolicy, logger)}
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -34,6 +39,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	defer ln.Close()
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	monitorDone := make(chan struct{})
+	go func() { defer close(monitorDone); s.monitor.Run(monitorCtx) }()
+	defer func() { stopMonitor(); <-monitorDone }()
 
 	s.logger.Info("dbmesh listening", "addr", s.cfg.ListenAddr, "readers", len(s.cfg.ReaderURLs))
 
@@ -83,7 +92,7 @@ func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 		// PostgreSQL defaults the database to the requested user.
 		database = sm.Parameters["user"]
 	}
-	upstreamSession, err := upstream.Connect(ctx, s.cfg.WriterURL, s.cfg.ReaderURLs, database)
+	upstreamSession, err := upstream.Connect(ctx, s.cfg.WriterURL, s.cfg.ReaderURLs, database, s.monitor)
 	if err != nil {
 		sendError(backend, err)
 		_ = backend.Flush()
@@ -154,9 +163,16 @@ func (s *Server) handleQuery(
 	decision := router.Route(sql, *state)
 	target := ups.Writer()
 	targetName := "primary"
+	readerID := 0
 	if decision.Target == router.Replica {
-		target = ups.Reader()
-		targetName = "replica"
+		var reason string
+		target, readerID, reason = ups.Reader(ctx)
+		if readerID > 0 {
+			targetName = "replica"
+			decision.Reason += fmt.Sprintf("; reader %d", readerID)
+		} else {
+			decision.Reason = reason
+		}
 	}
 
 	started := time.Now()
@@ -180,6 +196,7 @@ func (s *Server) handleQuery(
 
 	s.logger.Info("query routed",
 		"target", targetName,
+		"reader", readerID,
 		"reason", decision.Reason,
 		"duration", elapsed,
 		"sql", oneLine(sql),

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"dbmesh/internal/config"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
-	"dbmesh/internal/config"
 )
 
 // Opt-in integration coverage using the real primary and streaming readers.
@@ -32,6 +32,8 @@ func TestASTRoutingIntegration(t *testing.T) {
 	defer ln.Close()
 	server := NewServer(config.Config{WriterURL: writer, ReaderURLs: strings.Split(readers, ",")},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server.monitor.Refresh(ctx)
+	defer server.monitor.Close()
 	done := make(chan error, 1)
 	go func() {
 		conn, err := ln.Accept()
@@ -130,6 +132,8 @@ func TestDatabaseStartupIntegration(t *testing.T) {
 			_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 			server := NewServer(config.Config{WriterURL: writer, ReaderURLs: strings.Split(readers, ",")},
 				slog.New(slog.NewTextHandler(io.Discard, nil)))
+			server.monitor.Refresh(ctx)
+			defer server.monitor.Close()
 			done := make(chan error, 1)
 			go func() { done <- server.handleClient(ctx, upstream) }()
 			defer func() {

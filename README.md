@@ -28,7 +28,7 @@ psql / app / ORM
 
 - PostgreSQL StartupMessage (SSL/GSS requests are rejected and plaintext startup continues).
 - Simple Query Protocol.
-- SELECTs routed to replicas.
+- Supported SELECTs routed round-robin to healthy replicas within the configured WAL lag limit.
 - INSERT / UPDATE / DELETE / DDL routed to primary.
 - `SELECT ... FOR UPDATE/SHARE` routed to primary.
 - `BEGIN` pins the session to primary until `COMMIT` / `ROLLBACK`.
@@ -157,6 +157,70 @@ NOTICE:  dbmesh -> primary (write statement, 900µs)
 NOTICE:  dbmesh -> primary (transaction pinned to primary, 700µs)
 ```
 
+## Reader health and replication lag
+
+A server-wide monitor uses dedicated upstream connections and caches each
+reader's health and WAL replay position. Before routing a read, DBMesh checks
+that cached status; it does not issue monitoring queries on client connections.
+Reader IDs in NOTICE messages and logs are one-based indexes into
+`DBMESH_READER_URLS`.
+
+All settings below are optional and configurable in `.env`:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DBMESH_READER_CHECK_INTERVAL` | `1s` | Interval between monitoring rounds |
+| `DBMESH_READER_CHECK_TIMEOUT` | `500ms` | Timeout per monitor endpoint and reader connection attempt |
+| `DBMESH_READER_MAX_LAG_BYTES` | `1048576` | Maximum sampled WAL distance in bytes (1 MiB); zero is allowed |
+| `DBMESH_READER_STATUS_MAX_AGE` | `3s` | Maximum age of the primary sample used to measure a reader |
+
+Durations must be positive Go durations (for example `250ms`, `5s`).
+A round probes the primary, then all readers concurrently. If probes take longer
+than the interval, rounds do not overlap. Prefer a max age longer than the
+interval plus the expected probe duration to avoid unnecessary fallbacks.
+
+The primary's `pg_current_wal_lsn()` is compared with each standby's
+`pg_last_wal_replay_lsn()`: received but unapplied WAL does not count as caught up.
+WAL positions are cluster-wide, not per database. A reader beyond the earlier
+primary sample is treated as zero lag. This assumes all DSNs belong to the same
+physical replication cluster and timeline; failover/cluster discovery is out
+of scope. The configured roles must be able to connect to the DSN databases and
+execute these monitoring functions. Monitoring failure is treated conservatively.
+
+Failed checks, missing replay positions, non-standby endpoints, excessive lag,
+and expired samples exclude readers. If no reader qualifies, reads go to primary
+with the fallback reason in NOTICE messages and structured logs. Before the first
+successful sample, reads also go to primary. A temporary fallback does not pin
+the session; ordinary transaction/session pinning still applies.
+
+Reader connections are opened lazily for the requested database. A failed reader
+connection does not reject the client; another eligible reader or the primary is
+used. Closed connections are re-established on a subsequent read once monitoring
+permits it, with an interval-based cooldown after failed connection attempts.
+If a connection fails during a user query, that query returns an error and is
+**not automatically replayed**. A failure can occur between a health check and a
+query; monitoring is not an availability guarantee.
+
+This limits observed lag, not the age of individual rows and not read-after-write
+consistency. Even a zero-byte sampled gap can become outdated before a query runs.
+
+To run all integration checks, including temporarily pausing replica replay:
+
+```bash
+set -a
+. ./.env
+set +a
+DBMESH_TEST_WRITER_URL="$DBMESH_WRITER_URL" \
+DBMESH_TEST_READER_URLS="$DBMESH_READER_URLS" \
+DBMESH_TEST_REPLICATION_CONTROL=1 go test ./... -count=1
+```
+
+Use the demo cluster for this test. It pauses the first replica, generates WAL
+with a rolled-back update and a WAL switch, verifies exclusion and primary
+fallback, resumes replay, and verifies recovery. Replay is also resumed during
+test cleanup. A forcibly killed test may require manually running
+`SELECT pg_wal_replay_resume();` directly on that replica.
+
 ## Why not parse SQL with strings?
 
 The PostgreSQL AST distinguishes writable CTEs, locking SELECTs, comments,
@@ -194,12 +258,12 @@ claiming safe routing for arbitrary databases.
   on a replica until replication catches up.
 - No TLS.
 - Session-state handling is deliberately conservative: stateful statements make the session sticky to primary.
-- No replica-lag awareness yet.
+- Lag limits use periodically sampled WAL positions; they do not guarantee read-after-write consistency.
 - No failover.
 
 ## Roadmap
 
 1. Catalog-aware read safety and broader function classification.
-2. Reader health checks, lag awareness, and fallback.
+2. Read-after-write consistency using WAL positions.
 3. Request/user audit context (`app.user_id`, `app.request_id`, `app.service`).
 4. Extended Query Protocol and prepared statements.
