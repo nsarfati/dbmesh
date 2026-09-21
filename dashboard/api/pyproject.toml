@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbmesh-dashboard-api"
+version = "0.1.0"
+description = "HTTP API behind the DBMesh dashboard"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pyyaml>=6",
+    "psycopg[binary]>=3.1.20,<4",
+    "psycopg-pool>=3.2",
+    "dbmesh-python-client",  # not on PyPI yet; `make install` installs it from ../../clients/python
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

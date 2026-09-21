@@ -12,3 +12,6 @@ CREATE TABLE IF NOT EXISTS public.audit_events (
  created_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_events_request ON public.audit_events(audit_request_id);
+-- The dashboard lists events newest first and filters by table.
+CREATE INDEX IF NOT EXISTS audit_events_created ON public.audit_events(created_at DESC, event_id DESC);
+CREATE INDEX IF NOT EXISTS audit_events_table ON public.audit_events("schema", "table", created_at DESC);
