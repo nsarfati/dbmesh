@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"dbmesh/internal/config"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/nsarfati/dbmesh/internal/config"
 )
 
 func TestRequestedDatabaseOnAllUpstreams(t *testing.T) {

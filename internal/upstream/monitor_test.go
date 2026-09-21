@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"dbmesh/internal/config"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/nsarfati/dbmesh/internal/config"
 )
 
 func TestReaderEligibility(t *testing.T) {
@@ -63,7 +63,7 @@ func TestReaderFallbackIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	// Port zero is not a running PostgreSQL endpoint. The second reader is real.
-	urls := []string{"postgres://routepg:routepg@127.0.0.1:0/demo?sslmode=disable", strings.Split(readers, ",")[0]}
+	urls := []string{"postgres://dbmesh:dbmesh@127.0.0.1:0/demo?sslmode=disable", strings.Split(readers, ",")[0]}
 	policy := config.DefaultReaderPolicy()
 	m := NewMonitor(writer, urls, policy, nil)
 	defer m.Close()

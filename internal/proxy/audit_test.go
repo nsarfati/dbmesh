@@ -14,9 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"dbmesh/internal/audit"
-	"dbmesh/internal/config"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/nsarfati/dbmesh/internal/audit"
 )
 
 type captureSink struct {
@@ -53,10 +52,10 @@ func TestAuditIntegration(t *testing.T) {
 	}
 	defer ln.Close()
 	sink := &captureSink{}
-	server := NewServer(config.Config{WriterURL: writer, ReaderURLs: strings.Split(readers, ",")}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := NewServer(testConfig(t, writer, readers), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	server.auditSink = sink
-	server.monitor.Refresh(ctx)
-	defer server.monitor.Close()
+	refreshMonitors(ctx, server)
+	defer closeMonitors(server)
 	done := make(chan error, 1)
 	go func() {
 		conn, err := ln.Accept()
@@ -65,7 +64,7 @@ func TestAuditIntegration(t *testing.T) {
 		}
 		done <- err
 	}()
-	conn, err := pgconn.Connect(ctx, "postgres://routepg@"+ln.Addr().String()+"/demo?sslmode=disable")
+	conn, err := pgconn.Connect(ctx, "postgres://dbmesh@"+ln.Addr().String()+"/demo?sslmode=disable")
 	if err != nil {
 		t.Fatal(err)
 	}

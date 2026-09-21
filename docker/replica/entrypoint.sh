@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-until pg_isready -h primary -U routepg -d demo >/dev/null 2>&1; do
+until pg_isready -h primary -U dbmesh -d demo >/dev/null 2>&1; do
   sleep 1
 done
 
 rm -rf /var/lib/postgresql/data/*
-export PGPASSWORD=routepg
+export PGPASSWORD=dbmesh
 pg_basebackup \
   -h primary \
-  -U routepg \
+  -U dbmesh \
   -D /var/lib/postgresql/data \
   -Fp -Xs -P -R
 

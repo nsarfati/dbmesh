@@ -5,9 +5,42 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 import unicodedata
+import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import psycopg
 from psycopg import sql
+
+
+def _audit_options(conninfo, kwargs):
+    """Translate our URI extension to a standard startup options parameter."""
+    if not conninfo.startswith(("postgresql://", "postgres://")):
+        return conninfo, None
+    parts = urlsplit(conninfo)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    values = [value for key, value in query if key == "audit"]
+    if not values:
+        return conninfo, None
+    if len(values) != 1:
+        raise ValueError("audit must occur once")
+    tables = list(dict.fromkeys(values[0].split(",")))
+    if len(values[0]) > 4096:
+        raise ValueError("audit table selection must be at most 4096 bytes")
+    for table in tables:
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*", table):
+            raise ValueError("audit tables must use unquoted schema.table names")
+        schema, name = table.split(".")
+        if max(len(schema), len(name)) > 63 or schema in ("dbmesh", "information_schema") or schema.startswith("pg_"):
+            raise ValueError("unsupported audit table")
+    existing = kwargs.get("options")
+    if existing is None:
+        existing = next((v for k, v in reversed(query) if k == "options"), "")
+    if "dbmesh.audit" in existing:
+        raise ValueError("audit conflicts with an explicit dbmesh.audit option")
+    selected = ",".join(tables)
+    kwargs["options"] = (existing + " -c dbmesh.audit_tables=" + selected).strip()
+    clean = [(k, v) for k, v in query if k not in ("audit", "options")]
+    return urlunsplit(parts._replace(query=urlencode(clean))), selected
 
 
 def _header(*, user_id: str, request_id: str, service: str = "") -> str:
@@ -39,6 +72,7 @@ def connect(conninfo: str = "", **kwargs) -> "Connection":
     for option in ("autocommit", "cursor_factory", "prepare_threshold"):
         if option in kwargs:
             raise TypeError(f"{option} is managed by dbmesh")
+    conninfo, tables = _audit_options(conninfo, kwargs)
     raw = psycopg.connect(
         conninfo, autocommit=True, cursor_factory=psycopg.ClientCursor,
         prepare_threshold=None, **kwargs,
@@ -46,6 +80,9 @@ def connect(conninfo: str = "", **kwargs) -> "Connection":
     if raw.info.parameter_status("dbmesh_audit") != "comment-v1":
         raw.close()
         raise psycopg.NotSupportedError("server does not advertise DBMesh comment-v1 audit support")
+    if tables is not None and raw.info.parameter_status("dbmesh_audit_tables") != tables:
+        raw.close()
+        raise psycopg.NotSupportedError("server did not confirm requested audit tables")
     return Connection(raw)
 
 

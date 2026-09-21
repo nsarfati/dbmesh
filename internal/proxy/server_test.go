@@ -2,18 +2,117 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
-	"dbmesh/internal/config"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/nsarfati/dbmesh/internal/config"
 )
+
+// testConfig serves the writer URL's own database plus any extra names from the
+// same integration servers.
+func testConfig(t *testing.T, writer, readers string, extra ...string) config.Config {
+	t.Helper()
+	parsed, err := pgconn.ParseConfig(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var readerURLs []string
+	if readers != "" {
+		readerURLs = strings.Split(readers, ",")
+	}
+	cfg := config.Config{Databases: map[string]config.Database{}}
+	for _, name := range append([]string{parsed.Database}, extra...) {
+		cfg.Databases[name] = config.Database{WriterURL: writer, ReaderURLs: readerURLs}
+	}
+	return cfg
+}
+
+func refreshMonitors(ctx context.Context, s *Server) {
+	for _, db := range s.databases {
+		db.monitor.Refresh(ctx)
+	}
+}
+
+func closeMonitors(s *Server) {
+	for _, db := range s.databases {
+		db.monitor.Close()
+	}
+}
+
+func TestPsqlListDatabasesIntegration(t *testing.T) {
+	writer := os.Getenv("DBMESH_TEST_WRITER_URL")
+	if writer == "" {
+		t.Skip("set DBMESH_TEST_WRITER_URL")
+	}
+	psql, err := exec.LookPath("psql")
+	if err != nil {
+		t.Skip("psql is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	direct, err := pgconn.Connect(ctx, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantVersion := direct.ParameterStatus("server_version")
+	_ = direct.Close(ctx)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	server := NewServer(testConfig(t, writer, "", "postgres"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 2; i++ {
+			conn, e := ln.Accept()
+			if e != nil {
+				done <- e
+				return
+			}
+			e = server.handleClient(ctx, conn)
+			if e != nil && !errors.Is(e, io.EOF) {
+				done <- e
+				return
+			}
+		}
+		done <- nil
+	}()
+	dsn := "postgres://dbmesh@" + ln.Addr().String() + "/postgres?sslmode=disable"
+	conn, err := pgconn.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotVersion := conn.ParameterStatus("server_version")
+	_ = conn.Close(ctx)
+	if gotVersion != wantVersion {
+		t.Fatalf("advertised %q; primary reports %q", gotVersion, wantVersion)
+	}
+	out, err := exec.CommandContext(ctx, psql, dsn, "-X", "-v", "ON_ERROR_STOP=1", "-c", `\l`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("psql list databases: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "postgres") {
+		t.Fatalf("missing database list: %s", out)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
 
 // Opt-in integration coverage using the real primary and streaming readers.
 // No schema changes or persistent writes are needed.
@@ -30,10 +129,10 @@ func TestASTRoutingIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	server := NewServer(config.Config{WriterURL: writer, ReaderURLs: strings.Split(readers, ",")},
+	server := NewServer(testConfig(t, writer, readers),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	server.monitor.Refresh(ctx)
-	defer server.monitor.Close()
+	refreshMonitors(ctx, server)
+	defer closeMonitors(server)
 	done := make(chan error, 1)
 	go func() {
 		conn, err := ln.Accept()
@@ -42,7 +141,7 @@ func TestASTRoutingIntegration(t *testing.T) {
 		}
 		done <- err
 	}()
-	cfg, err := pgconn.ParseConfig("postgres://routepg@" + ln.Addr().String() + "/demo?sslmode=disable")
+	cfg, err := pgconn.ParseConfig("postgres://dbmesh@" + ln.Addr().String() + "/demo?sslmode=disable")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,10 +218,11 @@ func TestDatabaseStartupIntegration(t *testing.T) {
 		name, user, database, want string
 		missing                    bool
 	}{
-		{"configured database", "routepg", "demo", "demo", false},
-		{"different database", "routepg", "postgres", "postgres", false},
+		{"configured database", "dbmesh", "demo", "demo", false},
+		{"different database", "dbmesh", "postgres", "postgres", false},
 		{"omitted database defaults to user", "postgres", "", "postgres", false},
-		{"missing database", "routepg", "dbmesh_missing_database_test", "", true},
+		{"configured but missing upstream", "dbmesh", "dbmesh_missing_database_test", "", true},
+		{"database not configured in DBMesh", "dbmesh", "not_configured", "", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -130,10 +230,10 @@ func TestDatabaseStartupIntegration(t *testing.T) {
 			client, upstream := net.Pipe()
 			defer client.Close()
 			_ = client.SetDeadline(time.Now().Add(10 * time.Second))
-			server := NewServer(config.Config{WriterURL: writer, ReaderURLs: strings.Split(readers, ",")},
+			server := NewServer(testConfig(t, writer, readers, "postgres", "dbmesh_missing_database_test"),
 				slog.New(slog.NewTextHandler(io.Discard, nil)))
-			server.monitor.Refresh(ctx)
-			defer server.monitor.Close()
+			refreshMonitors(ctx, server)
+			defer closeMonitors(server)
 			done := make(chan error, 1)
 			go func() { done <- server.handleClient(ctx, upstream) }()
 			defer func() {

@@ -14,27 +14,45 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
+	pgquery "github.com/pganalyze/pg_query_go/v6"
 
-	"dbmesh/internal/audit"
-	"dbmesh/internal/config"
-	"dbmesh/internal/router"
-	"dbmesh/internal/upstream"
+	"github.com/nsarfati/dbmesh/internal/audit"
+	"github.com/nsarfati/dbmesh/internal/config"
+	"github.com/nsarfati/dbmesh/internal/router"
+	"github.com/nsarfati/dbmesh/internal/upstream"
 )
 
 type Server struct {
 	cfg       config.Config
 	logger    *slog.Logger
-	monitor   *upstream.Monitor
 	auditSink audit.Sink
+	databases map[string]*database
+}
+
+// database is the runtime state of one configured database.
+type database struct {
+	cfg        config.Database
+	monitor    *upstream.Monitor
+	dispatcher *audit.Dispatcher // nil unless row auditing is enabled
 }
 
 func NewServer(cfg config.Config, logger *slog.Logger) *Server {
-	if cfg.ReaderPolicy.CheckInterval == 0 {
-		cfg.ReaderPolicy = config.DefaultReaderPolicy()
+	s := &Server{cfg: cfg, logger: logger, auditSink: audit.LogSink{Logger: logger},
+		databases: make(map[string]*database, len(cfg.Databases))}
+	for name, dbCfg := range cfg.Databases {
+		if dbCfg.ReaderPolicy.CheckInterval == 0 {
+			dbCfg.ReaderPolicy = config.DefaultReaderPolicy()
+		}
+		db := &database{cfg: dbCfg,
+			monitor: upstream.NewMonitor(dbCfg.WriterURL, dbCfg.ReaderURLs, dbCfg.ReaderPolicy, logger.With("database", name))}
+		if len(cfg.Audit.Sinks) > 0 {
+			db.dispatcher = &audit.Dispatcher{WriterURL: dbCfg.WriterURL, Database: name, DestinationURL: cfg.Audit.DatabaseURL,
+				Retention: cfg.Audit.Retention, CleanupInterval: cfg.Audit.CleanupInterval, CleanupBatch: cfg.Audit.CleanupBatch,
+				Logger: logger, Wake: make(chan struct{}, 1)}
+		}
+		s.databases[name] = db
 	}
-	return &Server{cfg: cfg, logger: logger,
-		auditSink: audit.LogSink{Logger: logger},
-		monitor:   upstream.NewMonitor(cfg.WriterURL, cfg.ReaderURLs, cfg.ReaderPolicy, logger)}
+	return s
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -43,12 +61,21 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	defer ln.Close()
-	monitorCtx, stopMonitor := context.WithCancel(ctx)
-	monitorDone := make(chan struct{})
-	go func() { defer close(monitorDone); s.monitor.Run(monitorCtx) }()
-	defer func() { stopMonitor(); <-monitorDone }()
+	var background sync.WaitGroup
+	runCtx, stopBackground := context.WithCancel(ctx)
+	defer func() { stopBackground(); background.Wait() }()
+	readers := 0
+	for _, db := range s.databases {
+		readers += len(db.cfg.ReaderURLs)
+		background.Add(1)
+		go func() { defer background.Done(); db.monitor.Run(runCtx) }()
+		if db.dispatcher != nil {
+			background.Add(1)
+			go func() { defer background.Done(); db.dispatcher.Run(runCtx) }()
+		}
+	}
 
-	s.logger.Info("dbmesh listening", "addr", s.cfg.ListenAddr, "readers", len(s.cfg.ReaderURLs))
+	s.logger.Info("dbmesh listening", "addr", s.cfg.ListenAddr, "databases", len(s.databases), "readers", readers)
 
 	go func() {
 		<-ctx.Done()
@@ -79,6 +106,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 	defer conn.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
 
 	backend := pgproto3.NewBackend(conn, conn)
 	startup, err := receiveStartup(backend, conn)
@@ -96,23 +125,55 @@ func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 		// PostgreSQL defaults the database to the requested user.
 		database = sm.Parameters["user"]
 	}
-	upstreamSession, err := upstream.Connect(ctx, s.cfg.WriterURL, s.cfg.ReaderURLs, database, s.monitor)
+	db, ok := s.databases[database]
+	if !ok {
+		err := &pgconn.PgError{Severity: "FATAL", Code: "3D000", Message: fmt.Sprintf("database %q is not configured in DBMesh", database)}
+		sendError(backend, err)
+		_ = backend.Flush()
+		return err
+	}
+	upstreamSession, err := upstream.Connect(ctx, db.cfg.WriterURL, db.cfg.ReaderURLs, database, db.monitor)
 	if err != nil {
 		sendError(backend, err)
 		_ = backend.Flush()
 		return err
 	}
 	defer upstreamSession.Close(context.Background())
+	tables, err := audit.StartupTables(sm.Parameters["options"])
+	if err == nil && len(tables) > 0 {
+		if db.dispatcher == nil {
+			err = fmt.Errorf("row auditing requires audit.sinks to include postgres in the DBMesh config")
+		} else {
+			prepareCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			err = audit.Prepare(prepareCtx, db.cfg.WriterURL, database, tables)
+			cancel()
+			if err == nil {
+				select {
+				case db.dispatcher.Wake <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+	if err != nil {
+		sendError(backend, &pgconn.PgError{Severity: "FATAL", Code: "22023", Message: err.Error()})
+		_ = backend.Flush()
+		return err
+	}
 
 	// MVP auth model: DBMesh terminates client auth and uses configured
 	// credentials for upstream PostgreSQL connections.
 	backend.Send(&pgproto3.AuthenticationOk{})
-	backend.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: "16.0"})
+	// Clients such as psql choose catalog queries from this startup version.
+	backend.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: upstreamSession.Writer().ParameterStatus("server_version")})
 	backend.Send(&pgproto3.ParameterStatus{Name: "server_encoding", Value: "UTF8"})
 	backend.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
 	backend.Send(&pgproto3.ParameterStatus{Name: "DateStyle", Value: "ISO, MDY"})
 	backend.Send(&pgproto3.ParameterStatus{Name: "integer_datetimes", Value: "on"})
 	backend.Send(&pgproto3.ParameterStatus{Name: "dbmesh_audit", Value: "comment-v1"})
+	if len(tables) > 0 {
+		backend.Send(&pgproto3.ParameterStatus{Name: "dbmesh_audit_tables", Value: strings.Join(tables, ",")})
+	}
 	backend.Send(&pgproto3.BackendKeyData{ProcessID: 1, SecretKey: 1})
 	backend.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 	if err := backend.Flush(); err != nil {
@@ -126,7 +187,7 @@ func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 	s.logger.Info("client connected", "client", clientID, "database", database)
 
 	state := router.SessionState{}
-	client := auditClient{connectionID: newID(), database: database, user: sm.Parameters["user"], addr: conn.RemoteAddr().String()}
+	client := auditClient{connectionID: newID(), database: database, user: sm.Parameters["user"], addr: conn.RemoteAddr().String(), tables: tables}
 
 	for {
 		msg, err := backend.Receive()
@@ -173,6 +234,14 @@ func (s *Server) handleQuery(
 		backend.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus(*state)})
 		return backend.Flush()
 	}
+	if len(client.tables) > 0 {
+		tree, parseErr := pgquery.Parse(sql)
+		if parseErr == nil && len(tree.Stmts) > 1 {
+			sendProtocolError(backend, "row auditing supports one SQL statement per message; execute transaction commands separately")
+			backend.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus(*state)})
+			return backend.Flush()
+		}
+	}
 
 	decision := router.Route(sql, *state)
 	target := ups.Writer()
@@ -191,7 +260,14 @@ func (s *Server) handleQuery(
 
 	started := time.Now()
 	txBefore := string([]byte{target.TxStatus()})
-	results, execErr := target.Exec(ctx, sql).ReadAll()
+	var results []*pgconn.Result
+	var execErr error
+	if len(client.tables) > 0 && targetName == "primary" && target.TxStatus() != 'E' {
+		execErr = audit.SetContext(ctx, target, client.tables, s.cfg.Audit.Sinks, metadata)
+	}
+	if execErr == nil {
+		results, execErr = target.Exec(ctx, sql).ReadAll()
+	}
 	elapsed := time.Since(started)
 
 	// The upstream status accounts for errors, multiple transaction boundaries,
@@ -290,7 +366,10 @@ func (s *Server) handleQuery(
 	return backend.Flush()
 }
 
-type auditClient struct{ connectionID, database, user, addr string }
+type auditClient struct {
+	connectionID, database, user, addr string
+	tables                             []string
+}
 
 func newID() string {
 	var id [16]byte

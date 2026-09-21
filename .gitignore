@@ -1,13 +1,11 @@
-# Local environment and credentials; keep the example in version control.
+# Local configuration and credentials; keep config_example.yaml in version control.
+/config.yaml
 .env
 .env.*
-!.env.example
 
 # Go binaries, test executables and coverage output.
 /dbmesh
 /dbmesh.exe
-/routepg
-/routepg.exe
 /bin/
 /dist/
 *.test

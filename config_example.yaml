@@ -1,0 +1,59 @@
+# DBMesh configuration. Copy to config.yaml (ignored by Git) and adjust:
+#
+#   cp config_example.yaml config.yaml
+#   dbmesh -config config.yaml      # or DBMESH_CONFIG=/path/to/config.yaml
+#
+# Durations use Go syntax (500ms, 30s, 168h).
+
+# Address DBMesh accepts PostgreSQL client connections on.
+listen: ":6432"
+
+# One entry per database. The key is the database name clients connect to, and
+# the same name is used on the upstream servers. Connections to any other
+# database name are rejected.
+databases:
+  demo:
+    # Receives writes, transactions and anything not proven read-only.
+    writer:
+      user: dbmesh
+      pwd: dbmesh
+      host: "localhost:55432"
+      sslmode: disable          # optional; defaults to the driver's "prefer"
+
+    # Optional. Without readers, every query goes to the writer.
+    reader:
+      user: dbmesh
+      pwd: dbmesh
+      host:                     # one entry per replica, chosen round-robin
+        - "localhost:55433"
+        - "localhost:55434"
+      sslmode: disable
+      # Health policy for this database's readers (values shown are the defaults).
+      check_interval: 1s        # time between monitoring rounds
+      check_timeout: 500ms      # timeout per monitoring or reader connection attempt
+      max_lag_bytes: 1048576    # WAL bytes a reader may trail the writer; 0 is allowed
+      status_max_age: 3s        # oldest primary sample still trusted for lag
+
+  # Databases are independent: each has its own writer, readers and policy.
+  # analytics:
+  #   writer:
+  #     user: dbmesh
+  #     pwd: dbmesh
+  #     host: "analytics-primary:5432"
+  #   reader:
+  #     user: dbmesh
+  #     pwd: dbmesh
+  #     host: ["analytics-replica-1:5432", "analytics-replica-2:5432"]
+  #     max_lag_bytes: 4194304
+
+# Optional row auditing. Tables are selected per connection in the Python
+# client's DSN; see docs/row-audit.md.
+audit:
+  sinks: [postgres]
+  postgres:
+    url: "postgres://dbmesh_audit:dbmesh_audit@localhost:55435/dbmesh_audit?sslmode=disable"
+  # Delivered events are deleted once every sink has acknowledged them and
+  # this much time has passed. Use 0 to keep them forever.
+  retention: 168h
+  cleanup_interval: 1m          # time between cleanup runs
+  cleanup_batch: 1000           # rows deleted per transaction

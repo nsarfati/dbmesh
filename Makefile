@@ -7,10 +7,10 @@ db-down:
 	docker compose down -v
 
 run:
-	set -a; . ./.env; set +a; go run ./cmd/dbmesh
+	go run ./cmd/dbmesh -config config.yaml
 
 test:
 	go test ./...
 
 demo:
-	psql "postgresql://routepg@localhost:6432/demo?sslmode=disable"
+	psql "postgresql://dbmesh@localhost:6432/demo?sslmode=disable"

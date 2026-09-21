@@ -1,9 +1,24 @@
 services:
+  audit:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: dbmesh_audit
+      POSTGRES_PASSWORD: dbmesh_audit
+      POSTGRES_DB: dbmesh_audit
+    ports:
+      - "55435:5432"
+    volumes:
+      - audit-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbmesh_audit -d dbmesh_audit"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
   primary:
     image: postgres:17
     environment:
-      POSTGRES_USER: routepg
-      POSTGRES_PASSWORD: routepg
+      POSTGRES_USER: dbmesh
+      POSTGRES_PASSWORD: dbmesh
       POSTGRES_DB: demo
     command:
       - postgres
@@ -20,7 +35,7 @@ services:
     volumes:
       - ./docker/postgres-primary-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U routepg -d demo"]
+      test: ["CMD-SHELL", "pg_isready -U dbmesh -d demo"]
       interval: 2s
       timeout: 2s
       retries: 30
@@ -31,22 +46,40 @@ services:
       primary:
         condition: service_healthy
     environment:
-      PGPASSWORD: routepg
+      PGPASSWORD: dbmesh
     entrypoint: ["/replica-entrypoint.sh"]
     volumes:
       - ./docker/replica/entrypoint.sh:/replica-entrypoint.sh:ro
     ports:
       - "55433:5432"
+    # Healthy once the base backup finished and the standby accepts connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbmesh -d demo"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
 
   replica2:
     image: postgres:17
+    # Start after replica1: concurrent base backups make the primary recycle WAL
+    # that the other one still needs, and one of them fails.
     depends_on:
       primary:
         condition: service_healthy
+      replica1:
+        condition: service_healthy
     environment:
-      PGPASSWORD: routepg
+      PGPASSWORD: dbmesh
     entrypoint: ["/replica-entrypoint.sh"]
     volumes:
       - ./docker/replica/entrypoint.sh:/replica-entrypoint.sh:ro
     ports:
       - "55434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbmesh -d demo"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+volumes:
+  audit-data:

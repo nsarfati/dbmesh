@@ -2,13 +2,15 @@ import base64
 import json
 import os
 import unittest
+import time
+import uuid
 from unittest.mock import Mock, patch
 
 import psycopg
 from psycopg import sql
 
 import dbmesh
-from dbmesh.client import Connection, _header
+from dbmesh.client import Connection, _header, _audit_options
 
 
 class FakeCursor:
@@ -23,6 +25,31 @@ class FakeCursor:
 
 
 class ClientTests(unittest.TestCase):
+    def test_audit_url_becomes_startup_options(self):
+        kwargs = {}
+        clean, tables = _audit_options(
+            "postgresql://user:p%40ss@localhost/demo?sslmode=disable&audit=public.users,public.accounts&options=-c%20statement_timeout%3D5000",
+            kwargs,
+        )
+        self.assertNotIn("audit=", clean)
+        self.assertIn("p%40ss", clean)
+        self.assertIn("sslmode=disable", clean)
+        self.assertEqual(tables, "public.users,public.accounts")
+        self.assertEqual(kwargs["options"], "-c statement_timeout=5000 -c dbmesh.audit_tables=public.users,public.accounts")
+        for value in ("", "users", "public.users;DROP", "dbmesh.audit_outbox", "public.Users"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                _audit_options("postgresql://localhost/demo?audit=" + value, {})
+
+    @patch("dbmesh.client.psycopg.connect")
+    def test_audit_tables_must_be_confirmed(self, connect):
+        raw = connect.return_value
+        raw.info.parameter_status.side_effect = lambda name: {"dbmesh_audit": "comment-v1", "dbmesh_audit_tables": "public.users"}.get(name)
+        dbmesh.connect("postgresql://localhost/demo?audit=public.users")
+        self.assertEqual(connect.call_args.kwargs["options"], "-c dbmesh.audit_tables=public.users")
+        with self.assertRaises(psycopg.NotSupportedError):
+            dbmesh.connect("postgresql://localhost/demo?audit=public.accounts")
+        raw.close.assert_called_once()
+
     def setUp(self):
         self.raw_cursor = FakeCursor()
         self.raw = Mock(closed=False)
@@ -130,6 +157,68 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(cur.fetchone(), (3,))
                 self.assertIn("dbmesh -> replica", notices[-1])
                 self.assertEqual(conn.info.transaction_status, psycopg.pq.TransactionStatus.IDLE)
+
+
+@unittest.skipUnless(
+    all(os.getenv(k) for k in ("DBMESH_TEST_PROXY_URL", "DBMESH_TEST_WRITER_URL", "DBMESH_TEST_AUDIT_URL")),
+    "set DBMESH_TEST_PROXY_URL, DBMESH_TEST_WRITER_URL and DBMESH_TEST_AUDIT_URL",
+)
+class RowAuditIntegrationTests(unittest.TestCase):
+    def test_python_dsn_to_persistent_row_events(self):
+        schema = "python_audit_" + uuid.uuid4().hex
+        request = "python-" + uuid.uuid4().hex
+        with psycopg.connect(os.environ["DBMESH_TEST_WRITER_URL"], autocommit=True) as source, \
+                psycopg.connect(os.environ["DBMESH_TEST_AUDIT_URL"], autocommit=True) as destination:
+            source.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+            table = sql.Identifier(schema, "items")
+            source.execute(sql.SQL("CREATE TABLE {} (id int primary key, value text)").format(table))
+            try:
+                dsn = os.environ["DBMESH_TEST_PROXY_URL"]
+                dsn += ("&" if "?" in dsn else "?") + "audit=" + schema + ".items"
+                with dbmesh.connect(dsn) as conn:
+                    notices = []
+                    conn.add_notice_handler(lambda n: notices.append(n.message_primary))
+                    with conn.request(user_id="812", request_id=request, service="billing"):
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT 1")
+                            self.assertEqual(cur.fetchone(), (1,))
+                            self.assertIn("dbmesh -> replica", notices[-1])
+                            cur.execute(sql.SQL("INSERT INTO {} VALUES (%s,%s)").format(table), (1, "before"))
+                            cur.execute(sql.SQL("UPDATE {} SET value=%s WHERE id=%s RETURNING value").format(table), ("after", 1))
+                            self.assertEqual(cur.fetchone(), ("after",))
+                            cur.execute("BEGIN")
+                            cur.execute(sql.SQL("UPDATE {} SET value='rolled-back'").format(table))
+                            cur.execute("ROLLBACK")
+                            cur.execute(sql.SQL("DELETE FROM {} WHERE id=%s").format(table), (1,))
+                deadline = time.monotonic() + 10
+                events = []
+                while time.monotonic() < deadline:
+                    exists = destination.execute("SELECT to_regclass('public.audit_events')").fetchone()[0]
+                    if exists:
+                        events = destination.execute(
+                            'SELECT operation, previous_value, new_value, audit_user_id, audit_service, db, "schema", "table" '
+                            'FROM public.audit_events WHERE audit_request_id=%s ORDER BY created_at', (request,),
+                        ).fetchall()
+                    if len(events) == 3:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(len(events), 3)
+                self.assertEqual([e[0] for e in events], ["INSERT", "UPDATE", "DELETE"])
+                self.assertIsNone(events[0][1])
+                self.assertEqual(events[1][1], {"id": 1, "value": "before"})
+                self.assertEqual(events[1][2], {"id": 1, "value": "after"})
+                self.assertIsNone(events[2][2])
+                for event in events:
+                    self.assertEqual(event[3:5], ("812", "billing"))
+                    self.assertEqual(event[6:], (schema, "items"))
+            finally:
+                # Remove only this test's objects/events, preserving demo data.
+                if source.execute("SELECT to_regclass('dbmesh.audit_outbox')").fetchone()[0]:
+                    source.execute('DELETE FROM dbmesh.audit_delivery WHERE event_id IN (SELECT event_id FROM dbmesh.audit_outbox WHERE "schema"=%s)', (schema,))
+                    source.execute('DELETE FROM dbmesh.audit_outbox WHERE "schema"=%s', (schema,))
+                source.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+                if destination.execute("SELECT to_regclass('public.audit_events')").fetchone()[0]:
+                    destination.execute('DELETE FROM public.audit_events WHERE "schema"=%s', (schema,))
 
 
 if __name__ == "__main__":

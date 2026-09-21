@@ -17,7 +17,7 @@ Use the binary extra for a bundled libpq; otherwise install with
 ```python
 import dbmesh
 
-dsn = "postgresql://routepg@localhost:6432/demo?sslmode=disable"
+dsn = "postgresql://dbmesh@localhost:6432/demo?sslmode=disable"
 with dbmesh.connect(dsn) as conn:
     conn.add_notice_handler(lambda notice: print(notice.message_primary))
     with conn.request(user_id="812", request_id="req-123", service="billing"):
@@ -67,14 +67,41 @@ multi-statement message shares one context and produces one event with its
 completed command tags. The event reports execution outcome, SQLSTATE, row counts,
 actual primary/reader target and transaction status. `success` does not mean a
 later transaction committed; `unknown` means a transport error prevented certainty.
-The context is application-declared, not a verified end-user identity. No trigger,
-`set_config`, additional transaction, or row-change history is created.
+The context is application-declared, not a verified end-user identity. Without
+an `audit` table selection, it produces only statement execution logs.
+
+## Select tables for persistent row auditing
+
+```python
+dsn = "postgresql://dbmesh@localhost:6432/demo?sslmode=disable&audit=public.users"
+with dbmesh.connect(dsn) as conn:
+    with conn.request(user_id="812", request_id="req-123", service="billing"):
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET plan=%s WHERE id=%s", ("enterprise", 1))
+```
+
+The wrapper translates the URI's custom `audit` parameter to startup `options`.
+DBMesh prepares triggers before confirming the connection and the wrapper verifies
+the acknowledged selection. Unquoted lowercase schema.table names are supported,
+without a table-count limit; the selection has a 4096-byte size limit.
+Missing tables or missing server sink configuration fail connection.
+Table selection is per connection, while user/request/service remain per request.
+
+With row auditing enabled, send one SQL statement per execute; BEGIN and COMMIT
+must be separate executions. The proxy refreshes trigger context before primary
+operations. Triggers capture committed row changes in a source outbox; delivery
+to the independent PostgreSQL sink is asynchronous, with retries and deduplication.
+Outside request(), selected table changes are still captured with NULL identity
+fields. SELECT routing and returned rows/command tags are preserved.
+
+See [service setup and boundaries](../../docs/row-audit.md). The service must have
+`audit.sinks: [postgres]` and `audit.postgres.url` set in its `config.yaml`.
 
 ## Tests
 
 ```bash
 .venv/bin/python -m unittest discover -s clients/python/tests -v
-DBMESH_TEST_PROXY_URL='postgresql://routepg@localhost:6432/demo?sslmode=disable' \
+DBMESH_TEST_PROXY_URL='postgresql://dbmesh@localhost:6432/demo?sslmode=disable' \
   .venv/bin/python -m unittest discover -s clients/python/tests -v
 ```
 

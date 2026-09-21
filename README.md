@@ -1,19 +1,41 @@
 # DBMesh
 
-**One PostgreSQL endpoint. Reads go to replicas. Writes go to primary.**
+**One PostgreSQL endpoint. Reads go to replicas. Writes go to the primary.**
 
-DBMesh is a small PostgreSQL-compatible read/write router. Applications connect to DBMesh with a normal PostgreSQL client; DBMesh inspects each SQL statement and sends safe reads to read replicas while keeping writes, locking operations, transactions, and session-sensitive work on the primary.
+DBMesh is a small PostgreSQL-compatible read/write router. Applications connect
+to DBMesh with an ordinary PostgreSQL client. DBMesh parses each SQL statement
+and sends safe reads to healthy read replicas, while writes, locking reads,
+transactions and session-sensitive work stay on the primary.
 
-> This repository is intentionally scoped as a take-home prototype, not a production database proxy.
+It also ships an optional **row audit** feature: a Python client attaches request
+context (user, request ID, service) to queries, and DBMesh records before/after
+row images of selected tables in a durable outbox delivered to a separate
+database.
 
-## Architecture
+> **Status: early prototype.** DBMesh is not a PgBouncer or Pgpool replacement.
+> See [Limitations](#limitations) before pointing it at anything important.
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Examples](#examples)
+- [Reader health and replication lag](#reader-health-and-replication-lag)
+- [Correctness rule](#correctness-rule)
+- [Row auditing and the Python client](#row-auditing-and-the-python-client)
+- [Limitations](#limitations)
+- [Development and testing](#development-and-testing)
+- [Roadmap](#roadmap)
+
+## How it works
 
 ```text
 psql / app / ORM
        |
        | PostgreSQL wire protocol
        v
-   +---------+
+   +---------+      one entry per database in config.yaml
    | DBMesh  |
    +----+----+
         |
@@ -24,247 +46,159 @@ psql / app / ORM
                     round-robin
 ```
 
-## What currently works
+- Supports the PostgreSQL startup handshake and the Simple Query Protocol.
+- Plain `SELECT`s go round-robin to replicas that are healthy and within the
+  configured WAL lag limit.
+- `INSERT` / `UPDATE` / `DELETE` / DDL, `SELECT ... FOR UPDATE/SHARE` and
+  anything unrecognised go to the primary.
+- `BEGIN` pins the session to the primary until `COMMIT` / `ROLLBACK`.
+  Stateful statements such as `SET` pin the whole session.
+- Route decisions are reported to the client as `NOTICE` messages and in the
+  structured server log.
+- Several databases can be served at once, each with its own writer, readers and
+  health policy.
 
-- PostgreSQL StartupMessage (SSL/GSS requests are rejected and plaintext startup continues).
-- Simple Query Protocol.
-- Supported SELECTs routed round-robin to healthy replicas within the configured WAL lag limit.
-- INSERT / UPDATE / DELETE / DDL routed to primary.
-- `SELECT ... FOR UPDATE/SHARE` routed to primary.
-- `BEGIN` pins the session to primary until `COMMIT` / `ROLLBACK`.
-- Stateful statements such as `SET` pin the session to primary.
-- Unknown statements route to primary.
-- Route decisions appear in `psql` as NOTICE messages.
+SQL is parsed with PostgreSQL 17's parser via
+[`pg_query_go`](https://github.com/pganalyze/pg_query_go). The classifier walks
+every statement and nested AST node; a message goes to the primary if any part
+writes, locks, changes session state, or uses syntax it does not recognise.
 
-SQL is parsed with PostgreSQL 17's parser via `github.com/pganalyze/pg_query_go/v6`. The classifier walks every statement and nested AST node. A message goes to primary if any part writes, locks, changes session state, or uses unsupported syntax.
+## Quick start
 
-## Run locally
-
-Prerequisites: Go, a C compiler (GCC or Clang), CGO enabled (`CGO_ENABLED=1`), Docker Compose, and `psql`. The parser uses CGO; its C sources are bundled with the Go module.
-
-```bash
-cp .env.example .env
-make db-up
-go mod tidy
-go test ./...
-make run
-```
-
-DBMesh runs on the host. `.env.example` uses the published host ports:
-
-| Service | Default container name | Host port | Container port |
-| --- | --- | --- | --- |
-| primary | proxy_db-primary-1 | 55432 | 5432 |
-| replica1 | proxy_db-replica1-1 | 55433 | 5432 |
-| replica2 | proxy_db-replica2-1 | 55434 | 5432 |
-
-All three use user `routepg`, password `routepg`, and database `demo`.
-These local demo credentials retain their original names so existing PostgreSQL
-volumes continue to work after the rename to DBMesh.
-`make run` sources `.env` with automatic export enabled; `go run` alone
-does not load this file. The listen variable is `DBMESH_LISTEN`.
-`.env` is ignored by Git; `.env.example` is intended to be versioned.
-
-The replicas take a physical base backup before accepting connections.
-Before connecting to DBMesh, check `docker compose ps -a` and verify all
-three databases from the host:
+Prerequisites: Go 1.23+, a C compiler (the parser uses CGO, with `CGO_ENABLED=1`),
+Docker Compose and `psql`.
 
 ```bash
-for port in 55432 55433 55434; do
-  psql "postgres://routepg:routepg@localhost:$port/demo?sslmode=disable" \
-    -X -v ON_ERROR_STOP=1 \
-    -c 'SELECT current_database(), pg_is_in_recovery();'
-done
+cp config_example.yaml config.yaml   # local settings; ignored by Git
+make db-up                           # primary, two replicas and an audit database
+make run                             # DBMesh on :6432
 ```
-
-The primary should return `f`, and both replicas should return `t`.
-Only the primary has a Docker healthcheck; the SQL checks verify that the
-replicas are ready. If a replica is still starting, wait and repeat the check.
-
-For an existing primary initialized before `002-replication.sh` was added,
-apply the replication authentication rule without deleting its data:
-
-```bash
-docker compose exec -T primary bash /docker-entrypoint-initdb.d/002-replication.sh
-docker compose exec -T primary psql -U routepg -d demo -c 'SELECT pg_reload_conf();'
-docker compose up -d replica1 replica2
-```
-
-New primary databases run this script automatically during initialization.
-The rule allows SCRAM-authenticated physical replication for the demo role
-on directly connected networks. Avoid `make db-down` when preserving data:
-that target runs `docker compose down -v` and deletes volumes.
 
 In another terminal:
 
 ```bash
-make demo
+make demo                            # psql to postgresql://dbmesh@localhost:6432/demo
 ```
 
-Or connect directly with:
+`make db-up` starts these containers on the host:
+
+| Service  | Host port | Purpose                                         |
+| -------- | --------- | ----------------------------------------------- |
+| primary  | 55432     | Demo primary (user/password `dbmesh`, db `demo`) |
+| replica1 | 55433     | Streaming replica                               |
+| replica2 | 55434     | Streaming replica                               |
+| audit    | 55435     | Row-audit destination (`dbmesh_audit`)          |
+
+Replicas take a physical base backup before accepting connections. Check that
+the primary returns `f` and both replicas return `t`:
 
 ```bash
-psql "postgresql://routepg@localhost:6432/demo?sslmode=disable"
+for port in 55432 55433 55434; do
+  psql "postgres://dbmesh:dbmesh@localhost:$port/demo?sslmode=disable" \
+    -X -c 'SELECT pg_is_in_recovery();'
+done
 ```
 
-Try:
+`make db-up` waits for each service to be healthy (`replica2` starts after
+`replica1`, so the two base backups never overlap). `make db-down` removes the
+containers and **deletes their volumes**.
+
+## Configuration
+
+DBMesh reads a YAML file, `config.yaml` by default. Pass another path with
+`-config path/to/file.yaml` or `DBMESH_CONFIG`. Unknown keys are rejected so a
+typo never silently changes behaviour. [`config_example.yaml`](config_example.yaml)
+documents every option:
+
+```yaml
+listen: ":6432"
+
+databases:
+  demo:                          # the database name clients connect to
+    writer:
+      user: dbmesh
+      pwd: dbmesh
+      host: "localhost:55432"
+    reader:                      # optional; without it every query uses the writer
+      user: dbmesh
+      pwd: dbmesh
+      host: ["localhost:55433", "localhost:55434"]
+      check_interval: 1s
+      check_timeout: 500ms
+      max_lag_bytes: 1048576
+      status_max_age: 3s
+
+audit:                           # optional, see "Row auditing"
+  sinks: [postgres]
+  postgres:
+    url: "postgres://dbmesh_audit:dbmesh_audit@localhost:55435/dbmesh_audit"
+  retention: 168h
+```
+
+| Key                                 | Default | Meaning                                                          |
+| ----------------------------------- | ------- | ---------------------------------------------------------------- |
+| `listen`                            | `:6432` | Address for client connections                                   |
+| `databases.<name>.writer`           | —       | `user`, `pwd`, `host` (`host:port`), optional `sslmode`          |
+| `databases.<name>.reader`           | none    | `user`, `pwd`, `host` (a list), optional `sslmode`, health policy |
+| `reader.check_interval`             | `1s`    | Time between monitoring rounds                                   |
+| `reader.check_timeout`              | `500ms` | Timeout per monitoring probe and reader connection attempt       |
+| `reader.max_lag_bytes`              | `1048576` | Maximum WAL bytes a reader may trail the writer; `0` is allowed |
+| `reader.status_max_age`             | `3s`    | Oldest primary sample still trusted for lag                      |
+| `audit.sinks`                       | none    | Enabled sinks; only `postgres` exists today                      |
+| `audit.postgres.url`                | —       | Destination database (required with the `postgres` sink)         |
+| `audit.retention`                   | `168h`  | Keep delivered events this long; `0` keeps them forever          |
+| `audit.cleanup_interval`            | `1m`    | Time between cleanup runs                                        |
+| `audit.cleanup_batch`               | `1000`  | Rows deleted per transaction                                     |
+
+- The key under `databases` is both the name clients ask for and the database
+  name used upstream. A client asking for a database that is not configured is
+  rejected with `3D000`.
+- Credentials are yours to protect: keep `config.yaml` out of version control
+  (it is in `.gitignore`) and restrict its file permissions.
+- Durations use Go syntax (`500ms`, `30s`, `168h`); a bare `0` is also accepted.
+
+## Examples
+
+### Several databases with their own replicas
+
+```yaml
+databases:
+  shop:
+    writer: {user: dbmesh, pwd: "s3cret", host: "shop-primary:5432"}
+    reader:
+      user: dbmesh
+      pwd: "s3cret"
+      host: ["shop-replica-1:5432", "shop-replica-2:5432"]
+  analytics:
+    writer: {user: dbmesh, pwd: "s3cret", host: "analytics-primary:5432"}
+    reader:
+      user: dbmesh
+      pwd: "s3cret"
+      host: ["analytics-replica:5432"]
+      max_lag_bytes: 4194304     # analytics tolerates more lag
+```
+
+Clients pick the database in the usual way:
+`psql "postgresql://dbmesh@localhost:6432/analytics"`.
+
+### Watching the routing
 
 ```sql
-SELECT * FROM users;
--- Function calls (including count) conservatively use and pin to primary.
--- Run them in a separate session when testing replica routing.
-UPDATE users SET plan = 'enterprise' WHERE id = 1;
-SELECT * FROM users WHERE id = 1 FOR UPDATE;
+SELECT * FROM users;                                  -- NOTICE: dbmesh -> replica (read-only SELECT, 1.2ms)
+UPDATE users SET plan = 'enterprise' WHERE id = 1;    -- NOTICE: dbmesh -> primary (write statement, 900µs)
+SELECT * FROM users WHERE id = 1 FOR UPDATE;          -- NOTICE: dbmesh -> primary (locking SELECT, ...)
 
-BEGIN;
-SELECT * FROM users;
-UPDATE users SET plan = 'pro' WHERE id = 2;
-SELECT * FROM users;
-COMMIT;
-SELECT * FROM users;
+BEGIN;                                                -- primary from here...
+SELECT * FROM users;                                  -- NOTICE: dbmesh -> primary (transaction pinned to primary, ...)
+COMMIT;                                               -- ...until here
 ```
 
-Plain reads outside the transaction produce replica notices; writes and every
-statement from `BEGIN` through `COMMIT` produce primary notices. The final
-SELECT returns to a replica. Multiple statements in one Simple Query message
-are routed together: `SELECT 1; UPDATE users SET plan=plan WHERE false;` goes
-entirely to primary.
+Multiple statements in one Simple Query message are routed together:
+`SELECT 1; UPDATE users SET plan = plan WHERE false;` runs entirely on the
+primary. Function calls, including `count(*)`, conservatively use the primary
+and pin the session, so use a fresh session to see replica routing again.
 
-Run the opt-in integration test against the local databases with:
-
-```bash
-set -a
-. ./.env
-set +a
-DBMESH_TEST_WRITER_URL="$DBMESH_WRITER_URL" \
-DBMESH_TEST_READER_URLS="$DBMESH_READER_URLS" \
-go test ./internal/proxy -run TestASTRoutingIntegration -v -count=1
-```
-
-This starts its own proxy connection on an ephemeral local port. It checks
-routing, multi-statement results, failed transactions, savepoints and chained
-transactions without changing existing rows.
-
-After the updates, query `SELECT id, plan FROM users ORDER BY id;` directly
-on ports 55433 and 55434 to verify both replicas receive the changes. Replication
-is asynchronous, so a reader may briefly lag behind the primary.
-
-You should see notices similar to:
-
-```text
-NOTICE:  dbmesh -> replica (read-only SELECT, 1.2ms)
-NOTICE:  dbmesh -> primary (write statement, 900µs)
-NOTICE:  dbmesh -> primary (transaction pinned to primary, 700µs)
-```
-
-## Reader health and replication lag
-
-A server-wide monitor uses dedicated upstream connections and caches each
-reader's health and WAL replay position. Before routing a read, DBMesh checks
-that cached status; it does not issue monitoring queries on client connections.
-Reader IDs in NOTICE messages and logs are one-based indexes into
-`DBMESH_READER_URLS`.
-
-All settings below are optional and configurable in `.env`:
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `DBMESH_READER_CHECK_INTERVAL` | `1s` | Interval between monitoring rounds |
-| `DBMESH_READER_CHECK_TIMEOUT` | `500ms` | Timeout per monitor endpoint and reader connection attempt |
-| `DBMESH_READER_MAX_LAG_BYTES` | `1048576` | Maximum sampled WAL distance in bytes (1 MiB); zero is allowed |
-| `DBMESH_READER_STATUS_MAX_AGE` | `3s` | Maximum age of the primary sample used to measure a reader |
-
-Durations must be positive Go durations (for example `250ms`, `5s`).
-A round probes the primary, then all readers concurrently. If probes take longer
-than the interval, rounds do not overlap. Prefer a max age longer than the
-interval plus the expected probe duration to avoid unnecessary fallbacks.
-
-The primary's `pg_current_wal_lsn()` is compared with each standby's
-`pg_last_wal_replay_lsn()`: received but unapplied WAL does not count as caught up.
-WAL positions are cluster-wide, not per database. A reader beyond the earlier
-primary sample is treated as zero lag. This assumes all DSNs belong to the same
-physical replication cluster and timeline; failover/cluster discovery is out
-of scope. The configured roles must be able to connect to the DSN databases and
-execute these monitoring functions. Monitoring failure is treated conservatively.
-
-Failed checks, missing replay positions, non-standby endpoints, excessive lag,
-and expired samples exclude readers. If no reader qualifies, reads go to primary
-with the fallback reason in NOTICE messages and structured logs. Before the first
-successful sample, reads also go to primary. A temporary fallback does not pin
-the session; ordinary transaction/session pinning still applies.
-
-Reader connections are opened lazily for the requested database. A failed reader
-connection does not reject the client; another eligible reader or the primary is
-used. Closed connections are re-established on a subsequent read once monitoring
-permits it, with an interval-based cooldown after failed connection attempts.
-If a connection fails during a user query, that query returns an error and is
-**not automatically replayed**. A failure can occur between a health check and a
-query; monitoring is not an availability guarantee.
-
-This limits observed lag, not the age of individual rows and not read-after-write
-consistency. Even a zero-byte sampled gap can become outdated before a query runs.
-
-To run all integration checks, including temporarily pausing replica replay:
-
-```bash
-set -a
-. ./.env
-set +a
-DBMESH_TEST_WRITER_URL="$DBMESH_WRITER_URL" \
-DBMESH_TEST_READER_URLS="$DBMESH_READER_URLS" \
-DBMESH_TEST_REPLICATION_CONTROL=1 go test ./... -count=1
-```
-
-Use the demo cluster for this test. It pauses the first replica, generates WAL
-with a rolled-back update and a WAL switch, verifies exclusion and primary
-fallback, resumes replay, and verifies recovery. Replay is also resumed during
-test cleanup. A forcibly killed test may require manually running
-`SELECT pg_wal_replay_resume();` directly on that replica.
-
-## Why not parse SQL with strings?
-
-The PostgreSQL AST distinguishes writable CTEs, locking SELECTs, comments,
-string literals and multiple statements. Unsupported nodes and parse failures
-go to primary; the upstream server still reports any SQL error.
-
-Function calls, including aggregates such as `count(*)` and diagnostic
-functions such as `pg_is_in_recovery()`, conservatively go to primary and make
-the session sticky because their effects are not resolved against the catalog.
-Unknown syntax also pins conservatively, even after an error. Reconnect to
-clear this routing state.
-
-Transaction state comes from the upstream PostgreSQL connection, including
-the failed-transaction status, rather than being inferred from SQL keywords.
-
-## Correctness rule
-
-**If a statement falls outside the supported read syntax, route it to primary.**
-
-AST classification is syntactic, not a proof of semantic read-only behavior.
-This demo assumes ordinary tables and built-in operators/types. Views, row
-security policies, user-defined operators and casts can hide effects that the
-raw parser cannot resolve. Catalog-aware validation is still needed before
-claiming safe routing for arbitrary databases.
-
-## MVP limitations
-
-- Simple Query Protocol only.
-- Client auth is terminated by DBMesh; upstream credentials come from environment DSNs.
-- The requested database overrides the database in every upstream DSN. `\c postgres`
-  connects to `postgres` on the primary and readers; a nonexistent database
-  produces PostgreSQL's connection error. When omitted from startup, the database
-  defaults to the requested username. Access uses the configured upstream role,
-  not the client username. A newly created database may briefly be unavailable
-  on a replica until replication catches up.
-- No TLS.
-- Session-state handling is deliberately conservative: stateful statements make the session sticky to primary.
-- Lag limits use periodically sampled WAL positions; they do not guarantee read-after-write consistency.
-- No failover.
-
-## Python request context and audit sinks
-
-The pip-installable client lives in [clients/python](clients/python/README.md).
-It wraps psycopg 3's Simple Query cursor and uses autocommit:
+### Python client with request context
 
 ```bash
 python3 -m venv .venv
@@ -274,54 +208,132 @@ python3 -m venv .venv
 ```python
 import dbmesh
 
-with dbmesh.connect("postgresql://routepg@localhost:6432/demo?sslmode=disable") as conn:
+dsn = "postgresql://dbmesh@localhost:6432/demo?sslmode=disable&audit=public.users"
+
+with dbmesh.connect(dsn) as conn:
     with conn.request(user_id="812", request_id="req-123", service="billing"):
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE id = %s", (1,))
-            print(cur.fetchone())
             cur.execute("UPDATE users SET plan = %s WHERE id = %s", ("enterprise", 1))
 ```
 
-`request()` attaches a versioned, encoded SQL comment to each execution. It does
-not create a transaction. DBMesh extracts the metadata and masks the header with
-spaces before routing and executing the SQL. The context never reaches PostgreSQL
-as session settings: no `set_config`, triggers, or internal transactions are used.
-Ordinary SELECTs still use eligible replicas; UPDATEs use the primary. Existing
-transaction and function-routing policies still apply. Parameters are adapted by
-psycopg, never interpolated by the wrapper.
+`&audit=public.users` asks DBMesh to capture row changes to that table; the
+request context is stored with every captured event.
 
-The client requires the startup capability `dbmesh_audit=comment-v1`, preventing
-silent loss of audit metadata against older proxies or a direct PostgreSQL server.
-Clients without this extension keep their existing behavior. Metadata is opt-in,
-application-declared context, not authenticated end-user identity.
+### Checking audit delivery
 
-The first sink writes `query audited` structured log events using the service's
-logger. Each includes a random query ID and connection ID, request context,
-requested database/client user, cleaned SQL, actual target/reader, duration,
-completed command tags, row counts, SQLSTATE, execution outcome, and upstream
-transaction state before/after. One Simple Query message produces one event;
-all statements in a batch share its context. Empty queries do not emit an event.
-SQL in audit logs includes literal parameters; configure log access accordingly.
-Malformed reserved headers are rejected before SQL execution, without logging
-their payload as audit context.
+Each audited database has a status view, queryable with plain `psql` against the
+**source** database:
 
-`success` means execution completed, not that a later explicit transaction
-committed. A transaction can subsequently roll back. `unknown` reports transport
-errors where DBMesh cannot determine the result. Rows report command-tag counts
-(including SELECT rows); they are not a durable count of committed modifications.
-This is an execution audit, not before/after row history or a transactional outbox.
+```sql
+SELECT sink, pending, oldest_pending_age, last_success_at, last_error, last_error_at
+FROM dbmesh.audit_delivery_status;
+```
 
-Additional destinations can implement `internal/audit.Sink.Emit(context, event)`
-and be wired into the server. The interface is concurrent and synchronous; the
-MVP implements only the log sink, with no queue, remote sink configuration or
-durability guarantee. A sink failure is logged and does not turn already-executed
-SQL into a retryable failure. No SQL is automatically retried for audit delivery.
+```text
+   sink   | pending | oldest_pending_age |        last_success_at | last_error | last_error_at
+----------+---------+--------------------+------------------------+------------+--------------
+ postgres |       0 |                    | 2026-09-21 20:24:30+00 |            |
+```
 
-Python tests (with an optional running proxy for end-to-end checks):
+`pending` and `oldest_pending_age` grow while a sink is unavailable, and
+`last_error` shows why. The [row audit guide](docs/row-audit.md) explains the
+delivery guarantees and cleanup.
+
+## Reader health and replication lag
+
+A monitor per database uses dedicated upstream connections and caches each
+reader's health and WAL replay position. Before routing a read, DBMesh consults
+that cache; it never issues monitoring queries on client connections. Reader IDs
+in notices and logs are one-based positions in the configured `host` list.
+
+A round probes the primary, then all readers concurrently; rounds never overlap.
+The primary's `pg_current_wal_lsn()` is compared with each standby's
+`pg_last_wal_replay_lsn()`, so WAL that is received but not yet applied does not
+count as caught up. Choose `status_max_age` longer than `check_interval` plus the
+expected probe time to avoid needless fallbacks.
+
+A reader is excluded after a failed check, a missing replay position, an
+endpoint that is not a standby, excessive lag or an expired sample. If none
+qualifies (including before the first successful sample), reads go to the
+primary with the reason in the notice and log. A temporary fallback does not pin
+the session.
+
+Reader connections open lazily for the requested database. A failed connection
+does not reject the client, and a query that fails mid-flight is **not
+replayed**. Monitoring limits observed lag; it does not guarantee read-after-write
+consistency, because even a zero-byte gap can be outdated before a query runs.
+
+All DSNs of one database must belong to the same replication cluster and
+timeline. Failover and cluster discovery are out of scope.
+
+## Correctness rule
+
+**If a statement falls outside the supported read syntax, route it to the primary.**
+
+AST classification is syntactic, not a proof of read-only behaviour. Views,
+row-level security, user-defined operators and casts can hide side effects that
+the parser cannot resolve, and function calls are not resolved against the
+catalog. Transaction state comes from the upstream connection (including the
+failed-transaction status) rather than from guessing at SQL keywords.
+
+## Row auditing and the Python client
+
+The [Python client](clients/python/README.md) wraps psycopg 3 and adds an
+encoded SQL comment with request context to each execution. DBMesh strips it
+before routing and executing the SQL. Without a table selection the context only
+enriches the statement execution log (`query audited`); with `&audit=schema.table`
+DBMesh installs triggers that write committed row changes to a per-database
+outbox and delivers them at-least-once, deduplicated by event ID, to the audit
+database.
+
+- Delivered events are cleaned up in batches once **every** sink acknowledged
+  them and `audit.retention` has passed.
+- `dbmesh.audit_delivery_status` reports pending events, the age of the oldest
+  and the last sink error.
+- Request metadata is application-declared context, not authenticated identity.
+
+See [docs/row-audit.md](docs/row-audit.md) for setup, guarantees, limitations and
+tests.
+
+## Limitations
+
+- Simple Query Protocol only; no extended protocol, prepared statements or `COPY`.
+- Client authentication is terminated by DBMesh and there is no TLS on the client
+  side. Upstream connections use the credentials in `config.yaml` (client
+  usernames are not used upstream), and each upstream `sslmode` is configurable.
+- Only databases listed in `config.yaml` are reachable. A newly created database
+  may briefly be unavailable on a replica until replication catches up.
+- Session-state handling is deliberately conservative: stateful statements make
+  the session sticky to the primary.
+- No connection pooling, failover or leader election.
+
+## Development and testing
+
+```bash
+go vet ./...
+go test ./...          # unit tests; integration tests skip without a database
+```
+
+Integration tests run against the demo cluster and are enabled by environment
+variables:
+
+```bash
+export DBMESH_TEST_WRITER_URL='postgres://dbmesh:dbmesh@localhost:55432/demo?sslmode=disable'
+export DBMESH_TEST_READER_URLS='postgres://dbmesh:dbmesh@localhost:55433/demo?sslmode=disable,postgres://dbmesh:dbmesh@localhost:55434/demo?sslmode=disable'
+export DBMESH_TEST_AUDIT_URL='postgres://dbmesh_audit:dbmesh_audit@localhost:55435/dbmesh_audit?sslmode=disable'
+go test ./... -count=1
+```
+
+Adding `DBMESH_TEST_REPLICATION_CONTROL=1` also pauses replica replay to verify
+lag exclusion, fallback and recovery. Use the demo cluster only; if a run is
+killed, execute `SELECT pg_wal_replay_resume();` on the paused replica.
+
+Python tests:
 
 ```bash
 .venv/bin/python -m unittest discover -s clients/python/tests -v
-DBMESH_TEST_PROXY_URL='postgresql://routepg@localhost:6432/demo?sslmode=disable' \
+# with a running proxy, for the end-to-end checks:
+DBMESH_TEST_PROXY_URL='postgresql://dbmesh@localhost:6432/demo?sslmode=disable' \
   .venv/bin/python -m unittest discover -s clients/python/tests -v
 ```
 
@@ -329,5 +341,5 @@ DBMESH_TEST_PROXY_URL='postgresql://routepg@localhost:6432/demo?sslmode=disable'
 
 1. Catalog-aware read safety and broader function classification.
 2. Read-after-write consistency using WAL positions.
-3. Additional audit sinks and delivery guarantees.
+3. Additional audit sinks.
 4. Extended Query Protocol and prepared statements.

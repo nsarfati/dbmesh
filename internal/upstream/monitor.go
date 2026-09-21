@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"dbmesh/internal/config"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/nsarfati/dbmesh/internal/config"
 )
 
 // ReaderStatus is a snapshot, never a guarantee of read-after-write consistency.
