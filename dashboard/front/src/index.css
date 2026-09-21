@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. Components use these names, never raw colours, so light and
+   dark stay consistent. Operation colours carry meaning: green inserts, amber
+   updates, red deletes. */
+:root {
+  --background: oklch(0.985 0.003 250);
+  --foreground: oklch(0.22 0.02 265);
+  --card: oklch(1 0 0);
+  --muted: oklch(0.965 0.005 255);
+  --muted-foreground: oklch(0.5 0.02 260);
+  --border: oklch(0.91 0.008 255);
+  --input: oklch(0.87 0.01 255);
+  --ring: oklch(0.55 0.2 275);
+  --primary: oklch(0.5 0.21 275);
+  --primary-foreground: oklch(0.99 0 0);
+  --hover: oklch(0.955 0.008 260);
+  --insert: oklch(0.52 0.14 155);
+  --update: oklch(0.58 0.14 70);
+  --delete: oklch(0.55 0.2 25);
+  --json-key: oklch(0.45 0.13 250);
+  --json-string: oklch(0.45 0.12 155);
+  --json-number: oklch(0.5 0.14 60);
+  --json-keyword: oklch(0.48 0.17 310);
+  color-scheme: light;
+}
+
+.dark {
+  --background: oklch(0.155 0.014 265);
+  --foreground: oklch(0.95 0.005 255);
+  --card: oklch(0.2 0.016 265);
+  --muted: oklch(0.24 0.016 265);
+  --muted-foreground: oklch(0.7 0.02 260);
+  --border: oklch(0.3 0.018 265);
+  --input: oklch(0.34 0.02 265);
+  --ring: oklch(0.7 0.16 275);
+  --primary: oklch(0.68 0.17 275);
+  --primary-foreground: oklch(0.15 0.02 265);
+  --hover: oklch(0.26 0.018 265);
+  --insert: oklch(0.78 0.16 155);
+  --update: oklch(0.82 0.15 85);
+  --delete: oklch(0.74 0.17 22);
+  --json-key: oklch(0.78 0.11 240);
+  --json-string: oklch(0.8 0.13 155);
+  --json-number: oklch(0.82 0.13 75);
+  --json-keyword: oklch(0.78 0.15 310);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-hover: var(--hover);
+  --color-insert: var(--insert);
+  --color-update: var(--update);
+  --color-delete: var(--delete);
+  --color-json-key: var(--json-key);
+  --color-json-string: var(--json-string);
+  --color-json-number: var(--json-number);
+  --color-json-keyword: var(--json-keyword);
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  ::selection { background: color-mix(in oklab, var(--primary) 30%, transparent); }
+  button:not(:disabled), [role="button"], select { cursor: pointer; }
+}
+
+/* Drawer and overlay motion, switched off for people who ask for less. */
+@keyframes sheet-in { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes sheet-out { from { transform: none; } to { transform: translateX(100%); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes row-flash { from { background: color-mix(in oklab, var(--insert) 32%, transparent); } to { background: transparent; } }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .4; transform: scale(.7); } }
+.sheet-content[data-state="open"] { animation: sheet-in .22s cubic-bezier(.2, .8, .2, 1); }
+.sheet-content[data-state="closed"] { animation: sheet-out .16s ease-in; }
+.sheet-overlay[data-state="open"] { animation: fade-in .2s ease-out; }
+.sheet-overlay[data-state="closed"] { animation: fade-out .16s ease-in; }
+.live-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+.row-flash > td { animation: row-flash 2.6s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-content, .sheet-overlay, .live-dot, .row-flash > td { animation: none !important; }
+}

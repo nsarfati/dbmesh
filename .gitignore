@@ -33,6 +33,10 @@ AGENTS.md
 .DS_Store
 Thumbs.db
 
+# Dashboard front-end dependencies and build output.
+node_modules/
+/dashboard/front/dist/
+
 # Python client build and development artifacts.
 .venv/
 __pycache__/
