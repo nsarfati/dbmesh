@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -165,11 +166,9 @@ func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 	// credentials for upstream PostgreSQL connections.
 	backend.Send(&pgproto3.AuthenticationOk{})
 	// Clients such as psql choose catalog queries from this startup version.
-	backend.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: upstreamSession.Writer().ParameterStatus("server_version")})
-	backend.Send(&pgproto3.ParameterStatus{Name: "server_encoding", Value: "UTF8"})
-	backend.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
-	backend.Send(&pgproto3.ParameterStatus{Name: "DateStyle", Value: "ISO, MDY"})
-	backend.Send(&pgproto3.ParameterStatus{Name: "integer_datetimes", Value: "on"})
+	for _, name := range reportedParameters {
+		backend.Send(&pgproto3.ParameterStatus{Name: name, Value: upstreamSession.Writer().ParameterStatus(name)})
+	}
 	backend.Send(&pgproto3.ParameterStatus{Name: "dbmesh_audit", Value: "comment-v1"})
 	if len(tables) > 0 {
 		backend.Send(&pgproto3.ParameterStatus{Name: "dbmesh_audit_tables", Value: strings.Join(tables, ",")})
@@ -266,7 +265,7 @@ func (s *Server) handleQuery(
 		execErr = audit.SetContext(ctx, target, client.tables, s.cfg.Audit.Sinks, metadata)
 	}
 	if execErr == nil {
-		results, execErr = target.Exec(ctx, sql).ReadAll()
+		results, execErr = readAll(target.Exec(ctx, sql))
 	}
 	elapsed := time.Since(started)
 
@@ -314,6 +313,7 @@ func (s *Server) handleQuery(
 		Severity: "NOTICE",
 		Code:     "00000",
 		Message:  fmt.Sprintf("dbmesh -> %s (%s, %s)", targetName, decision.Reason, elapsed.Round(time.Microsecond)),
+		Detail:   s.routeDetail(client.database, targetName, readerID, decision, elapsed),
 	}))
 
 	s.logger.Info("query routed",
@@ -364,6 +364,60 @@ func (s *Server) handleQuery(
 
 	backend.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus(*state)})
 	return backend.Flush()
+}
+
+// readAll drains a multi-result reader like MultiResultReader.ReadAll, but keeps
+// each result's column descriptions even when it has no rows: pgconn only
+// records them while reading rows, and clients need them to describe an empty
+// result set.
+func readAll(mrr *pgconn.MultiResultReader) ([]*pgconn.Result, error) {
+	var results []*pgconn.Result
+	for mrr.NextResult() {
+		rr := mrr.ResultReader()
+		fields := append([]pgconn.FieldDescription(nil), rr.FieldDescriptions()...)
+		result := rr.Read()
+		if len(result.FieldDescriptions) == 0 {
+			result.FieldDescriptions = fields
+		}
+		results = append(results, result)
+	}
+	err := mrr.Close()
+	return results, err
+}
+
+// reportedParameters are the settings PostgreSQL announces at startup that
+// clients use to decode results: without TimeZone, IntervalStyle or
+// standard_conforming_strings, drivers such as psycopg cannot read timestamps
+// (and its C extension crashes). They come from the writer, so a client sees the
+// same values it would get connecting directly.
+var reportedParameters = []string{
+	"server_version", "server_encoding", "client_encoding", "DateStyle", "IntervalStyle",
+	"TimeZone", "integer_datetimes", "standard_conforming_strings",
+}
+
+// routeInfo is the machine-readable form of the route NOTICE, sent as its
+// DETAIL so clients need not parse the human-readable message.
+type routeInfo struct {
+	Target     string  `json:"target"`
+	Reader     int     `json:"reader,omitempty"`
+	Reason     string  `json:"reason"`
+	LagBytes   *uint64 `json:"lag_bytes,omitempty"` // last monitor sample of the serving reader
+	DurationUS int64   `json:"duration_us"`
+	Fallback   bool    `json:"fallback,omitempty"` // a read that could not use a reader
+}
+
+func (s *Server) routeDetail(database, target string, reader int, decision router.Decision, elapsed time.Duration) string {
+	info := routeInfo{Target: target, Reader: reader, Reason: decision.Reason, DurationUS: elapsed.Microseconds(),
+		Fallback: decision.Target == router.Replica && reader == 0}
+	if db, ok := s.databases[database]; ok && reader > 0 {
+		lag := db.monitor.Status(reader - 1).LagBytes
+		info.LagBytes = &lag
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 type auditClient struct {

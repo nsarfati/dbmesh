@@ -3,6 +3,7 @@
 import base64
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 import json
 import unicodedata
 import re
@@ -10,6 +11,33 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import psycopg
 from psycopg import sql
+
+
+@dataclass(frozen=True)
+class Route:
+    """Where DBMesh ran the last statement, from the structured DETAIL of its NOTICE."""
+
+    target: str  # "primary" or "replica"
+    reader: int  # one-based reader position; 0 when the primary served it
+    reason: str
+    duration_us: int
+    lag_bytes: "int | None" = None  # last monitor sample of the serving reader
+    fallback: bool = False  # a read that could not use a reader
+
+
+def _parse_route(diag):
+    """Return a Route for a DBMesh route NOTICE, or None for any other diagnostic."""
+    if not (diag.message_primary or "").startswith("dbmesh -> ") or not diag.message_detail:
+        return None
+    try:
+        data = json.loads(diag.message_detail)
+        return Route(
+            target=str(data["target"]), reader=int(data.get("reader", 0)), reason=str(data.get("reason", "")),
+            duration_us=int(data.get("duration_us", 0)), lag_bytes=data.get("lag_bytes"),
+            fallback=bool(data.get("fallback", False)),
+        )
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def _audit_options(conninfo, kwargs):
@@ -89,6 +117,8 @@ def connect(conninfo: str = "", **kwargs) -> "Connection":
 class Connection:
     def __init__(self, raw):
         self._raw = raw
+        self._last_route = None
+        raw.add_notice_handler(self._on_notice)
         # Contexts are specific to this connection and to the current execution
         # context. Nested requests restore their parent, including on exceptions.
         self._header = ContextVar(f"dbmesh_request_{id(self)}", default="")
@@ -123,6 +153,16 @@ class Connection:
     def info(self):
         return self._raw.info
 
+    def _on_notice(self, diag):
+        route = _parse_route(diag)
+        if route is not None:
+            self._last_route = route
+
+    @property
+    def last_route(self):
+        """The Route of the most recent statement, or None (older proxy, or no statement yet)."""
+        return self._last_route
+
     def add_notice_handler(self, callback):
         """Register a psycopg diagnostic callback (for example for route NOTICEs)."""
         self._raw.add_notice_handler(callback)
@@ -147,6 +187,7 @@ class Cursor:
     def execute(self, query, params=None) -> "Cursor":
         if not isinstance(query, (str, sql.Composable)):
             raise TypeError("query must be a string or psycopg.sql.Composable")
+        self._connection._last_route = None  # this statement's NOTICE arrives during execute
         header = self._connection._header.get()
         if header:
             # Metadata never undergoes SQL parameter interpolation. Its URL-safe

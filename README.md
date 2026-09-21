@@ -54,7 +54,9 @@ psql / app / ORM
 - `BEGIN` pins the session to the primary until `COMMIT` / `ROLLBACK`.
   Stateful statements such as `SET` pin the whole session.
 - Route decisions are reported to the client as `NOTICE` messages and in the
-  structured server log.
+  structured server log. The notice's `DETAIL` carries the same decision as JSON
+  (`target`, `reader`, `reason`, `lag_bytes`, `duration_us`) for programs; the
+  Python client exposes it as `conn.last_route`.
 - Several databases can be served at once, each with its own writer, readers and
   health policy.
 

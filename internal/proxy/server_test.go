@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nsarfati/dbmesh/internal/config"
+	"github.com/nsarfati/dbmesh/internal/router"
 )
 
 // testConfig serves the writer URL's own database plus any extra names from the
@@ -145,8 +147,11 @@ func TestASTRoutingIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var notices []string
-	cfg.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) { notices = append(notices, n.Message) }
+	var notices, details []string
+	cfg.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		notices = append(notices, n.Message)
+		details = append(details, n.Detail)
+	}
 	conn, err := pgconn.ConnectConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +194,7 @@ func TestASTRoutingIntegration(t *testing.T) {
 		{"SELECT 1", "primary", 'I', false, 1},
 	} {
 		t.Run(tt.sql, func(t *testing.T) {
-			notices = nil
+			notices, details = nil, nil
 			results, err := conn.Exec(ctx, tt.sql).ReadAll()
 			if (err != nil) != tt.fail {
 				t.Fatalf("err=%v; want failure=%v", err, tt.fail)
@@ -202,6 +207,13 @@ func TestASTRoutingIntegration(t *testing.T) {
 			}
 			if len(notices) != 1 || !strings.Contains(notices[0], "dbmesh -> "+tt.route+" (") {
 				t.Fatalf("notices=%v; want %s", notices, tt.route)
+			}
+			var info routeInfo
+			if err := json.Unmarshal([]byte(details[0]), &info); err != nil || info.Target != tt.route {
+				t.Fatalf("detail=%q err=%v; want target %s", details[0], err, tt.route)
+			}
+			if (info.Reader > 0) != (tt.route == "replica") || (info.LagBytes != nil) != (info.Reader > 0) {
+				t.Fatalf("detail=%q: reader and lag_bytes must be set exactly for replica routes", details[0])
 			}
 		})
 	}
@@ -294,5 +306,147 @@ func TestDatabaseStartupIntegration(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRouteDetail(t *testing.T) {
+	s := NewServer(config.Config{Databases: map[string]config.Database{"demo": {WriterURL: "postgres://x/demo", ReaderURLs: []string{"postgres://r/demo"}}}},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tt := range []struct {
+		name     string
+		target   string
+		reader   int
+		decision router.Decision
+		want     routeInfo
+	}{
+		{"write", "primary", 0, router.Decision{Target: router.Primary, Reason: "write statement"},
+			routeInfo{Target: "primary", Reason: "write statement", DurationUS: 1500}},
+		{"replica read", "replica", 1, router.Decision{Target: router.Replica, Reason: "read-only SELECT; reader 1"},
+			routeInfo{Target: "replica", Reader: 1, Reason: "read-only SELECT; reader 1", DurationUS: 1500}},
+		{"fallback read", "primary", 0, router.Decision{Target: router.Replica, Reason: "no eligible readers"},
+			routeInfo{Target: "primary", Reason: "no eligible readers", DurationUS: 1500, Fallback: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var got routeInfo
+			if err := json.Unmarshal([]byte(s.routeDetail("demo", tt.target, tt.reader, tt.decision, 1500*time.Microsecond)), &got); err != nil {
+				t.Fatal(err)
+			}
+			if tt.reader > 0 {
+				if got.LagBytes == nil {
+					t.Fatal("replica route lost lag_bytes")
+				}
+				got.LagBytes = nil // the monitor has not sampled anything in this unit test
+			}
+			if got != tt.want {
+				t.Fatalf("got %+v; want %+v", got, tt.want)
+			}
+		})
+	}
+	if s.routeDetail("unknown", "replica", 1, router.Decision{}, 0) == "" {
+		t.Fatal("unknown database must still produce a detail")
+	}
+}
+
+// An empty result set must still describe its columns; clients such as psql and
+// psycopg cannot build a header or a cursor description without it.
+func TestEmptyResultKeepsColumnsIntegration(t *testing.T) {
+	writer, readers := os.Getenv("DBMESH_TEST_WRITER_URL"), os.Getenv("DBMESH_TEST_READER_URLS")
+	if writer == "" || readers == "" {
+		t.Skip("set DBMESH_TEST_WRITER_URL and DBMESH_TEST_READER_URLS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	server := NewServer(testConfig(t, writer, readers), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	refreshMonitors(ctx, server)
+	defer closeMonitors(server)
+	done := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			err = server.handleClient(ctx, conn)
+		}
+		done <- err
+	}()
+	conn, err := pgconn.Connect(ctx, "postgres://dbmesh@"+ln.Addr().String()+"/demo?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(ctx); <-done }()
+	for _, query := range []string{
+		"SELECT id, name FROM users WHERE id < 0",                      // replica
+		"UPDATE users SET plan = plan WHERE id < 0 RETURNING id, plan", // primary
+	} {
+		mrr := conn.Exec(ctx, query)
+		if !mrr.NextResult() {
+			t.Fatalf("%s: no result", query)
+		}
+		rr := mrr.ResultReader()
+		fields := rr.FieldDescriptions()
+		if len(fields) < 2 || fields[0].Name != "id" {
+			t.Errorf("%s: fields=%v; want the column descriptions of an empty result", query, fields)
+		}
+		if rr.NextRow() {
+			t.Errorf("%s: unexpected row", query)
+		}
+		if _, err := rr.Close(); err != nil {
+			t.Errorf("%s: %v", query, err)
+		}
+		if err := mrr.Close(); err != nil {
+			t.Errorf("%s: %v", query, err)
+		}
+	}
+}
+
+// Drivers configure themselves from the startup parameters; a proxy that drops
+// them breaks timestamp decoding. The values must match a direct connection.
+func TestStartupParametersMatchUpstreamIntegration(t *testing.T) {
+	writer, readers := os.Getenv("DBMESH_TEST_WRITER_URL"), os.Getenv("DBMESH_TEST_READER_URLS")
+	if writer == "" || readers == "" {
+		t.Skip("set DBMESH_TEST_WRITER_URL and DBMESH_TEST_READER_URLS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	direct, err := pgconn.Connect(ctx, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer direct.Close(ctx)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	server := NewServer(testConfig(t, writer, readers), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	refreshMonitors(ctx, server)
+	defer closeMonitors(server)
+	done := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			err = server.handleClient(ctx, conn)
+		}
+		done <- err
+	}()
+	proxied, err := pgconn.Connect(ctx, "postgres://dbmesh@"+ln.Addr().String()+"/demo?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = proxied.Close(ctx); <-done }()
+
+	// Listed here on purpose: the test must not shrink along with the implementation.
+	for _, name := range []string{"server_version", "server_encoding", "client_encoding", "DateStyle", "IntervalStyle", "TimeZone", "integer_datetimes", "standard_conforming_strings"} {
+		want := direct.ParameterStatus(name)
+		if want == "" {
+			t.Fatalf("upstream did not report %s; the test needs a PostgreSQL that does", name)
+		}
+		if got := proxied.ParameterStatus(name); got != want {
+			t.Errorf("%s = %q through DBMesh; %q directly", name, got, want)
+		}
 	}
 }

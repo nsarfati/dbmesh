@@ -10,7 +10,7 @@ import psycopg
 from psycopg import sql
 
 import dbmesh
-from dbmesh.client import Connection, _header, _audit_options
+from dbmesh.client import Connection, Route, _header, _audit_options, _parse_route
 
 
 class FakeCursor:
@@ -223,3 +223,52 @@ class RowAuditIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteTests(unittest.TestCase):
+    @staticmethod
+    def diag(message="dbmesh -> replica (read-only SELECT; reader 2, 1ms)", detail=None):
+        return Mock(message_primary=message, message_detail=detail)
+
+    def test_parses_the_structured_detail(self):
+        detail = json.dumps({"target": "replica", "reader": 2, "reason": "read-only SELECT; reader 2",
+                             "lag_bytes": 128, "duration_us": 1500})
+        self.assertEqual(
+            _parse_route(self.diag(detail=detail)),
+            Route("replica", 2, "read-only SELECT; reader 2", 1500, lag_bytes=128, fallback=False),
+        )
+
+    def test_primary_route_and_fallback(self):
+        route = _parse_route(self.diag(detail=json.dumps(
+            {"target": "primary", "reason": "no eligible readers", "duration_us": 9, "fallback": True})))
+        self.assertEqual((route.target, route.reader, route.lag_bytes, route.fallback), ("primary", 0, None, True))
+
+    def test_ignores_other_notices_and_malformed_details(self):
+        self.assertIsNone(_parse_route(self.diag(message="something else", detail='{"target":"x"}')))
+        self.assertIsNone(_parse_route(self.diag(detail=None)))
+        for detail in ("not json", "{}", '{"target":"primary","reader":"x"}', "[1]"):
+            with self.subTest(detail=detail):
+                self.assertIsNone(_parse_route(self.diag(detail=detail)))
+
+    def test_connection_tracks_the_last_route_per_statement(self):
+        raw = Mock(closed=False)
+        raw.cursor.return_value = FakeCursor()
+        conn = Connection(raw)
+        handler = raw.add_notice_handler.call_args.args[0]
+        self.assertIsNone(conn.last_route)
+
+        def notice_during_execute(query, params):
+            handler(self.diag(detail=json.dumps({"target": "primary", "reason": "write", "duration_us": 5})))
+
+        conn.cursor()._raw.execute = notice_during_execute
+        cursor = conn.cursor()
+        cursor._raw.execute = notice_during_execute
+        cursor.execute("UPDATE t SET a = 1")
+        self.assertEqual(conn.last_route.target, "primary")
+        # A statement whose NOTICE never arrives (older proxy) must not report a stale route.
+        cursor._raw.execute = lambda query, params: None
+        cursor.execute("SELECT 1")
+        self.assertIsNone(conn.last_route)
+
+    def test_route_is_exported(self):
+        self.assertIs(dbmesh.Route, Route)

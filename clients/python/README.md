@@ -53,6 +53,24 @@ The client checks the startup `dbmesh_audit=comment-v1` capability. A plain
 PostgreSQL server or older DBMesh is rejected rather than silently ignoring audit
 metadata. Standard PostgreSQL clients continue to work with DBMesh.
 
+## Where a query ran
+
+DBMesh reports the route of every statement in its NOTICE. The client parses the
+structured `DETAIL` of that notice and exposes it as `conn.last_route`:
+
+```python
+with dbmesh.connect(dsn) as conn:
+    conn.execute("SELECT * FROM users")
+    route = conn.last_route
+    print(route.target, route.reader, route.lag_bytes)  # replica 1 0
+```
+
+`Route` has `target` (`"primary"` or `"replica"`), `reader` (one-based, `0` for the
+primary), `reason`, `duration_us`, `lag_bytes` (the reader's last monitored lag,
+only for replica routes) and `fallback` (a read that could not use a reader).
+`last_route` is `None` before the first statement and after any statement whose
+route the server did not report, such as an older DBMesh.
+
 ## Wire format and audit semantics
 
 The wrapper prepends `/*dbmesh:v1:BASE64URL*/` plus a newline. BASE64URL is
