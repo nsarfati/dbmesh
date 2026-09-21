@@ -97,6 +97,21 @@ fields. SELECT routing and returned rows/command tags are preserved.
 See [service setup and boundaries](../../docs/row-audit.md). The service must have
 `audit.sinks: [postgres]` and `audit.postgres.url` set in its `config.yaml`.
 
+## Install into another project
+
+Until the package is published, build it here and install it into the virtualenv
+of the project that will use it (the venv must already exist):
+
+```bash
+cd clients/python
+make install VENV=$HOME/code/other-repo/.venv
+```
+
+`make install` builds a wheel in `dist/`, replaces any installed version and pulls
+in `psycopg[binary]`; set `EXTRAS=` to skip the bundled libpq. Rerun it after
+changing the client. Other targets: `make install-dev` (editable install into
+this repository's `.venv`), `make test` and `make clean`.
+
 ## Tests
 
 ```bash
