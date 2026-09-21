@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -14,15 +15,17 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 
+	"dbmesh/internal/audit"
 	"dbmesh/internal/config"
 	"dbmesh/internal/router"
 	"dbmesh/internal/upstream"
 )
 
 type Server struct {
-	cfg     config.Config
-	logger  *slog.Logger
-	monitor *upstream.Monitor
+	cfg       config.Config
+	logger    *slog.Logger
+	monitor   *upstream.Monitor
+	auditSink audit.Sink
 }
 
 func NewServer(cfg config.Config, logger *slog.Logger) *Server {
@@ -30,7 +33,8 @@ func NewServer(cfg config.Config, logger *slog.Logger) *Server {
 		cfg.ReaderPolicy = config.DefaultReaderPolicy()
 	}
 	return &Server{cfg: cfg, logger: logger,
-		monitor: upstream.NewMonitor(cfg.WriterURL, cfg.ReaderURLs, cfg.ReaderPolicy, logger)}
+		auditSink: audit.LogSink{Logger: logger},
+		monitor:   upstream.NewMonitor(cfg.WriterURL, cfg.ReaderURLs, cfg.ReaderPolicy, logger)}
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -108,6 +112,7 @@ func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 	backend.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
 	backend.Send(&pgproto3.ParameterStatus{Name: "DateStyle", Value: "ISO, MDY"})
 	backend.Send(&pgproto3.ParameterStatus{Name: "integer_datetimes", Value: "on"})
+	backend.Send(&pgproto3.ParameterStatus{Name: "dbmesh_audit", Value: "comment-v1"})
 	backend.Send(&pgproto3.BackendKeyData{ProcessID: 1, SecretKey: 1})
 	backend.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 	if err := backend.Flush(); err != nil {
@@ -121,6 +126,7 @@ func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 	s.logger.Info("client connected", "client", clientID, "database", database)
 
 	state := router.SessionState{}
+	client := auditClient{connectionID: newID(), database: database, user: sm.Parameters["user"], addr: conn.RemoteAddr().String()}
 
 	for {
 		msg, err := backend.Receive()
@@ -130,7 +136,7 @@ func (s *Server) handleClient(ctx context.Context, conn net.Conn) error {
 
 		switch msg := msg.(type) {
 		case *pgproto3.Query:
-			if err := s.handleQuery(ctx, backend, upstreamSession, &state, msg.String); err != nil {
+			if err := s.handleQuery(ctx, backend, upstreamSession, &state, client, msg.String); err != nil {
 				return err
 			}
 
@@ -152,8 +158,16 @@ func (s *Server) handleQuery(
 	backend *pgproto3.Backend,
 	ups *upstream.Session,
 	state *router.SessionState,
+	client auditClient,
 	sql string,
 ) error {
+	sql, metadata, err := audit.Extract(sql)
+	if err != nil {
+		// Do not execute malformed metadata or log its untrusted payload.
+		sendError(backend, &pgconn.PgError{Severity: "ERROR", Code: "22023", Message: err.Error()})
+		backend.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus(*state)})
+		return backend.Flush()
+	}
 	if strings.TrimSpace(sql) == "" {
 		backend.Send(&pgproto3.EmptyQueryResponse{})
 		backend.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus(*state)})
@@ -176,6 +190,7 @@ func (s *Server) handleQuery(
 	}
 
 	started := time.Now()
+	txBefore := string([]byte{target.TxStatus()})
 	results, execErr := target.Exec(ctx, sql).ReadAll()
 	elapsed := time.Since(started)
 
@@ -187,6 +202,37 @@ func (s *Server) handleQuery(
 	// Pin conservatively even on errors: an earlier statement/function may
 	// already have changed session state.
 	state.StickyPrimary = state.StickyPrimary || decision.SessionSticky
+	if metadata != nil {
+		event := audit.Event{
+			Time: started, QueryID: newID(), ConnectionID: client.connectionID,
+			Context: *metadata, Database: client.database, ClientUser: client.user, ClientAddr: client.addr,
+			SQL: strings.TrimSpace(sql), Target: targetName, Reader: readerID, Duration: elapsed,
+			Outcome: "success", TxBefore: txBefore, TxAfter: string([]byte{status}),
+		}
+		auditErr := execErr
+		for _, result := range results {
+			if result.Err != nil {
+				auditErr = result.Err
+				break
+			}
+			event.Commands = append(event.Commands, result.CommandTag.String())
+			event.Rows += result.CommandTag.RowsAffected()
+		}
+		if auditErr != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(auditErr, &pgErr) {
+				event.Outcome, event.SQLState = "error", pgErr.Code
+			} else {
+				event.Outcome = "unknown"
+			}
+		}
+		if target.IsClosed() {
+			event.TxAfter = "unknown"
+		}
+		if err := s.auditSink.Emit(ctx, event); err != nil {
+			s.logger.Error("audit sink failed", "query_id", event.QueryID, "err", err)
+		}
+	}
 
 	backend.Send((*pgproto3.NoticeResponse)(&pgproto3.ErrorResponse{
 		Severity: "NOTICE",
@@ -242,6 +288,16 @@ func (s *Server) handleQuery(
 
 	backend.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus(*state)})
 	return backend.Flush()
+}
+
+type auditClient struct{ connectionID, database, user, addr string }
+
+func newID() string {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf("%x", id)
 }
 
 func receiveStartup(backend *pgproto3.Backend, conn net.Conn) (pgproto3.FrontendMessage, error) {

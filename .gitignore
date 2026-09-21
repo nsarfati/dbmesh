@@ -34,3 +34,14 @@ AGENTS.md
 /tmp/
 .DS_Store
 Thumbs.db
+
+# Python client build and development artifacts.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+/clients/python/build/
+/clients/python/dist/

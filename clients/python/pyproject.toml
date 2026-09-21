@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbmesh-python-client"
+version = "0.1.0"
+description = "Synchronous Python client for DBMesh query audit contexts"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["psycopg>=3.1.20,<4"]
+
+[project.optional-dependencies]
+binary = ["psycopg[binary]>=3.1.20,<4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

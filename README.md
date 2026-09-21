@@ -261,9 +261,73 @@ claiming safe routing for arbitrary databases.
 - Lag limits use periodically sampled WAL positions; they do not guarantee read-after-write consistency.
 - No failover.
 
+## Python request context and audit sinks
+
+The pip-installable client lives in [clients/python](clients/python/README.md).
+It wraps psycopg 3's Simple Query cursor and uses autocommit:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e './clients/python[binary]'
+```
+
+```python
+import dbmesh
+
+with dbmesh.connect("postgresql://routepg@localhost:6432/demo?sslmode=disable") as conn:
+    with conn.request(user_id="812", request_id="req-123", service="billing"):
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE id = %s", (1,))
+            print(cur.fetchone())
+            cur.execute("UPDATE users SET plan = %s WHERE id = %s", ("enterprise", 1))
+```
+
+`request()` attaches a versioned, encoded SQL comment to each execution. It does
+not create a transaction. DBMesh extracts the metadata and masks the header with
+spaces before routing and executing the SQL. The context never reaches PostgreSQL
+as session settings: no `set_config`, triggers, or internal transactions are used.
+Ordinary SELECTs still use eligible replicas; UPDATEs use the primary. Existing
+transaction and function-routing policies still apply. Parameters are adapted by
+psycopg, never interpolated by the wrapper.
+
+The client requires the startup capability `dbmesh_audit=comment-v1`, preventing
+silent loss of audit metadata against older proxies or a direct PostgreSQL server.
+Clients without this extension keep their existing behavior. Metadata is opt-in,
+application-declared context, not authenticated end-user identity.
+
+The first sink writes `query audited` structured log events using the service's
+logger. Each includes a random query ID and connection ID, request context,
+requested database/client user, cleaned SQL, actual target/reader, duration,
+completed command tags, row counts, SQLSTATE, execution outcome, and upstream
+transaction state before/after. One Simple Query message produces one event;
+all statements in a batch share its context. Empty queries do not emit an event.
+SQL in audit logs includes literal parameters; configure log access accordingly.
+Malformed reserved headers are rejected before SQL execution, without logging
+their payload as audit context.
+
+`success` means execution completed, not that a later explicit transaction
+committed. A transaction can subsequently roll back. `unknown` reports transport
+errors where DBMesh cannot determine the result. Rows report command-tag counts
+(including SELECT rows); they are not a durable count of committed modifications.
+This is an execution audit, not before/after row history or a transactional outbox.
+
+Additional destinations can implement `internal/audit.Sink.Emit(context, event)`
+and be wired into the server. The interface is concurrent and synchronous; the
+MVP implements only the log sink, with no queue, remote sink configuration or
+durability guarantee. A sink failure is logged and does not turn already-executed
+SQL into a retryable failure. No SQL is automatically retried for audit delivery.
+
+Python tests (with an optional running proxy for end-to-end checks):
+
+```bash
+.venv/bin/python -m unittest discover -s clients/python/tests -v
+DBMESH_TEST_PROXY_URL='postgresql://routepg@localhost:6432/demo?sslmode=disable' \
+  .venv/bin/python -m unittest discover -s clients/python/tests -v
+```
+
 ## Roadmap
 
 1. Catalog-aware read safety and broader function classification.
 2. Read-after-write consistency using WAL positions.
-3. Request/user audit context (`app.user_id`, `app.request_id`, `app.service`).
+3. Additional audit sinks and delivery guarantees.
 4. Extended Query Protocol and prepared statements.
