@@ -1,0 +1,36 @@
+FROM node:24-bookworm-slim AS front
+
+WORKDIR /build/dashboard/front
+COPY dashboard/front/package.json dashboard/front/package-lock.json ./
+RUN npm ci
+COPY dashboard/front/ ./
+RUN npm run build
+
+FROM python:3.13-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DASHBOARD_HOST=0.0.0.0 \
+    DASHBOARD_STATIC=/app/dashboard/front/dist \
+    DBMESH_CONFIG=/app/config.yaml
+
+WORKDIR /app
+COPY clients/python/ /build/clients/python/
+COPY dashboard/api/ /build/dashboard/api/
+RUN pip install --no-cache-dir /build/clients/python /build/dashboard/api \
+    && rm -rf /build \
+    && useradd --create-home --uid 10001 dashboard \
+    && chown dashboard:dashboard /app
+COPY --from=front /build/dashboard/front/dist/ /app/dashboard/front/dist/
+
+# MinIO client: pulls config.yaml from the Railway bucket at container start.
+ADD https://dl.min.io/client/mc/release/linux-amd64/mc /usr/local/bin/mc
+RUN chmod +x /usr/local/bin/mc
+
+USER dashboard
+EXPOSE 8000
+
+# Supply config.yaml at runtime; never bake database credentials into the image.
+# Railway supplies PORT; DASHBOARD_PORT remains available for local use.
+# When AWS_ENDPOINT_URL is set, config.yaml is fetched from the Railway bucket first.
+CMD ["sh", "-c", "export DASHBOARD_PORT=\"${PORT:-${DASHBOARD_PORT:-8000}}\"; if [ -n \"$AWS_ENDPOINT_URL\" ]; then mc alias set bucket \"$AWS_ENDPOINT_URL\" \"$AWS_ACCESS_KEY_ID\" \"$AWS_SECRET_ACCESS_KEY\" && mc cp \"bucket/$AWS_S3_BUCKET_NAME/${BUCKET_CONFIG_KEY:-config.yaml}\" \"$DBMESH_CONFIG\"; fi; exec python -m dbmesh_dashboard"]
