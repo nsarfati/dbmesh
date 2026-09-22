@@ -12,6 +12,10 @@ listen: ":6432"
 # The Compose collector uses host networking to reach this loopback listener.
 metrics_listen: "127.0.0.1:9091"
 
+# Optional. Where dashboard/api dials DBMesh when they run as separate services
+# (e.g. two Railway services) and can't both reach "listen" at localhost.
+# dashboard_proxy_addr: "dbmesh-proxy.railway.internal:6432"
+
 # One entry per database. The key is the database name clients connect to, and
 # the same name is used on the upstream servers. Connections to any other
 # database name are rejected.

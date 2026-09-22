@@ -72,7 +72,10 @@ def load_settings(path: str | os.PathLike[str] | None = None, env: Mapping[str, 
     databases = raw.get("databases") or {}
     if not isinstance(databases, dict) or not databases:
         raise ConfigError(f"{path}: databases must list at least one database")
-    proxy_host, proxy_port = _proxy_address(str(raw.get("listen") or ":6432"))
+    # dashboard_proxy_addr overrides `listen` when the dashboard and DBMesh run as
+    # separate services (e.g. two Railway services) and can't both dial "localhost".
+    proxy_addr = raw.get("dashboard_proxy_addr") or raw.get("listen") or ":6432"
+    proxy_host, proxy_port = _proxy_address(str(proxy_addr))
     readers = {}
     for name, entry in databases.items():
         hosts = ((entry or {}).get("reader") or {}).get("host") if isinstance(entry, dict) else None
