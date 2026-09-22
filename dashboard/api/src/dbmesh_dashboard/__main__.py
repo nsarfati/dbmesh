@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 import uvicorn
@@ -25,7 +26,8 @@ def main() -> int:
         print(f"Password: {settings.password}   (generated; set DASHBOARD_PASSWORD to choose your own)", flush=True)
     if settings.host not in ("127.0.0.1", "localhost", "::1"):
         print("WARNING: listening beyond loopback. There is no TLS; put a reverse proxy in front.", file=sys.stderr)
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info")
+    log_level = os.environ.get("DASHBOARD_LOG_LEVEL", "error").lower()
+    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level=log_level)
     return 0
 
 

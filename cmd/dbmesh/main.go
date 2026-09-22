@@ -16,7 +16,7 @@ func main() {
 	path := flag.String("config", envOr("DBMESH_CONFIG", "config.yaml"), "path to the YAML configuration file")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()}))
 	cfg, err := config.Load(*path)
 	if err != nil {
 		logger.Error("invalid configuration", "err", err)
@@ -38,4 +38,13 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// logLevel reads DBMESH_LOG_LEVEL ("debug", "info", "warn" or "error"; case-insensitive). Defaults to error.
+func logLevel() slog.Level {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(envOr("DBMESH_LOG_LEVEL", "error"))); err != nil {
+		return slog.LevelError
+	}
+	return level
 }
