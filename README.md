@@ -401,3 +401,4 @@ DBMESH_TEST_PROXY_URL='postgresql://dbmesh@localhost:6432/demo?sslmode=disable' 
 2. Read-after-write consistency using WAL positions.
 3. Additional audit sinks.
 4. Extended Query Protocol and prepared statements.
+5. Client authentication on the proxy (today any client can connect as any user, with no password).
