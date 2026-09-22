@@ -76,7 +76,9 @@ func inspectRead(m protoreflect.Message, d *Decision) {
 		requirePrimary(d, "write statement", false)
 		// A write may also contain a function that changes session state.
 	case *pgquery.FuncCall:
-		requirePrimary(d, "function call; effects unknown", true)
+		if !isSafeCatalogFunction(n) {
+			requirePrimary(d, "function call; effects unknown", true)
+		}
 	case *pgquery.VariableSetStmt, *pgquery.DiscardStmt,
 		*pgquery.ListenStmt, *pgquery.UnlistenStmt,
 		*pgquery.PrepareStmt, *pgquery.DeallocateStmt, *pgquery.DeclareCursorStmt:
@@ -111,4 +113,25 @@ func inspectRead(m protoreflect.Message, d *Decision) {
 		}
 		return true
 	})
+}
+
+// Keep this list narrow: these explicitly qualified catalog functions support
+// psql's database listing. Arguments still pass through inspectRead. Like other
+// supported expressions, this relies on the documented demo assumptions about
+// user-defined types/casts; it does not perform catalog or overload resolution.
+func isSafeCatalogFunction(n *pgquery.FuncCall) bool {
+	if len(n.Funcname) != 2 {
+		return false
+	}
+	schema := n.Funcname[0].GetString_()
+	name := n.Funcname[1].GetString_()
+	if schema == nil || name == nil || schema.Sval != "pg_catalog" {
+		return false
+	}
+	switch name.Sval {
+	case "pg_get_userbyid", "pg_encoding_to_char", "array_length", "array_to_string":
+		return true
+	default:
+		return false
+	}
 }

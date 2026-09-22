@@ -122,3 +122,58 @@ func TestStickySessionPinsReads(t *testing.T) {
 		t.Fatalf("got %+v; want primary", d)
 	}
 }
+
+func TestPsqlListDoesNotPinSession(t *testing.T) {
+	// Captured with psql 18.6 -E, including the ACL formatting expressions.
+	const listDatabases = `SELECT
+  d.datname as "Name",
+  pg_catalog.pg_get_userbyid(d.datdba) as "Owner",
+  pg_catalog.pg_encoding_to_char(d.encoding) as "Encoding",
+  CASE d.datlocprovider WHEN 'b' THEN 'builtin' WHEN 'c' THEN 'libc' WHEN 'i' THEN 'icu' END AS "Locale Provider",
+  d.datcollate as "Collate",
+  d.datctype as "Ctype",
+  d.datlocale as "Locale",
+  d.daticurules as "ICU Rules",
+  CASE WHEN pg_catalog.array_length(d.datacl, 1) = 0 THEN '(none)' ELSE pg_catalog.array_to_string(d.datacl, E'\n') END AS "Access privileges"
+FROM pg_catalog.pg_database d
+ORDER BY 1;`
+	state := SessionState{}
+	for _, sql := range []string{"SELECT * FROM users", listDatabases, "SELECT * FROM users"} {
+		d := Route(sql, state)
+		if d.Target != Replica || d.SessionSticky {
+			t.Fatalf("query %q: got %+v; want replica without session pin", sql, d)
+		}
+		state.StickyPrimary = state.StickyPrimary || d.SessionSticky
+	}
+}
+
+func TestSafeCatalogFunctions(t *testing.T) {
+	for _, tt := range []struct {
+		sql    string
+		target Target
+		sticky bool
+	}{
+		{"SELECT pg_catalog.pg_get_userbyid(10)", Replica, false},
+		{"SELECT pg_catalog.pg_encoding_to_char(6)", Replica, false},
+		{"SELECT pg_catalog.array_length(ARRAY[1, 2], 1)", Replica, false},
+		{"SELECT pg_catalog.array_to_string(ARRAY[1, 2], ',')", Replica, false},
+		{"SELECT pg_get_userbyid(10)", Primary, true},
+		{"SELECT public.pg_get_userbyid(10)", Primary, true},
+		{"SELECT other.pg_catalog.pg_get_userbyid(10)", Primary, true},
+		{"SELECT pg_catalog.set_config('search_path', 'public', false)", Primary, true},
+		{"SELECT pg_catalog.pg_advisory_lock(1)", Primary, true},
+		{"SELECT pg_catalog.unknown_function()", Primary, true},
+		{"SELECT pg_catalog.pg_get_userbyid(my_function())", Primary, true},
+		{"SELECT pg_catalog.pg_get_userbyid(10); SELECT my_function()", Primary, true},
+		{"SELECT pg_catalog.pg_get_userbyid(10) FROM users FOR UPDATE", Primary, false},
+		{"SELECT pg_catalog.pg_get_userbyid(10); DELETE FROM users", Primary, false},
+		{"WITH x AS (UPDATE users SET plan = 'pro' RETURNING id) SELECT pg_catalog.pg_get_userbyid(id) FROM x", Primary, false},
+	} {
+		t.Run(tt.sql, func(t *testing.T) {
+			d := Classify(tt.sql)
+			if d.Target != tt.target || d.SessionSticky != tt.sticky {
+				t.Fatalf("got %+v; want target=%v sticky=%v", d, tt.target, tt.sticky)
+			}
+		})
+	}
+}
