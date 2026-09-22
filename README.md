@@ -616,3 +616,11 @@ compatibility.
 | Routing and consistency | Improve read safety using catalog information and broader function classification. Add read-after-write consistency using WAL positions. |
 
 See [Contributing](CONTRIBUTING.md) for development setup, testing and pull request guidelines.
+
+## License
+
+DBMesh is licensed under the [Business Source License 1.1](LICENSE). The
+source is available to read, modify and use, including in production — the
+only restriction is offering DBMesh itself as a hosted or managed service
+that competes with the licensor. Each release converts to Apache License 2.0
+four years after its publication date.
