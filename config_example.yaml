@@ -10,6 +10,8 @@ listen: ":6432"
 
 # Optional HTTP endpoint for Prometheus, separate from PostgreSQL. Empty disables it.
 # The Compose collector uses host networking to reach this loopback listener.
+# When Prometheus runs as a separate service (e.g. Railway), bind "0.0.0.0:9091"
+# instead so it's reachable over the private network.
 metrics_listen: "127.0.0.1:9091"
 
 # One entry per database. The key is the database name clients connect to, and

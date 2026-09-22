@@ -1,0 +1,9 @@
+FROM prom/prometheus:v3.5.1
+
+# No credentials in this file (just the proxy's internal hostname), so it's
+# safe to bake into the image instead of fetching it from the bucket.
+COPY docker/prometheus/prometheus.railway.yml /etc/prometheus/prometheus.yml
+
+# Same retention as the local Compose setup. Needs a volume mounted at
+# /prometheus (Railway service settings) or this history is lost on restart.
+CMD ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d"]
