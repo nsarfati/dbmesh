@@ -4,6 +4,8 @@ import { useMetrics, useStatus } from '@/api/hooks'
 import { EmptyState, ErrorBanner } from '@/components/Feedback'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
+import { Tooltip } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 
 const number = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 1 })
 const WINDOWS = [['5m', 'Last 5 minutes'], ['15m', 'Last 15 minutes'], ['1h', 'Last hour'], ['6h', 'Last 6 hours'], ['24h', 'Last 24 hours']]
@@ -12,6 +14,7 @@ export function Metrics() {
   // Named to avoid shadowing the global `window` object.
   const [timeWindow, setTimeWindow] = useState('15m')
   const [database, setDatabase] = useState('')
+  const [hovered, setHovered] = useState<{ operation: string; target: 'primary' | 'replica' } | null>(null)
   const status = useStatus()
   const metrics = useMetrics(timeWindow, database)
   const data = metrics.data
@@ -79,17 +82,38 @@ export function Metrics() {
         <div className="grid gap-6 xl:grid-cols-2">
           <section className="rounded-lg border bg-card p-5">
             <h2 className="font-semibold">By operation</h2>
-            <p className="mt-1 text-xs text-muted-foreground">Writer in purple · Readers in green · estimated messages</p>
             <div className="mt-5 space-y-4">
               {operations.map((operation) => {
                 const matching = rows.filter((r) => r.operation === operation)
                 const writer = matching.filter((r) => r.target === 'primary').reduce((n, r) => n + r.count, 0)
                 const readers = matching.filter((r) => r.target === 'replica').reduce((n, r) => n + r.count, 0)
+                const active = hovered?.operation === operation ? hovered.target : null
                 return <div key={operation}>
-                  <div className="mb-1 flex justify-between gap-3 text-sm"><span className="font-mono uppercase">{operation}</span><span className="tabular-nums">Writer {number(writer)} · Readers {number(readers)}</span></div>
-                  <div aria-hidden className="flex h-2 overflow-hidden rounded-full bg-muted">
-                    <div className="bg-primary" style={{ width: `${total ? writer / total * 100 : 0}%` }} />
-                    <div className="bg-insert" style={{ width: `${total ? readers / total * 100 : 0}%` }} />
+                  <div className="mb-1 flex justify-between gap-3 text-sm">
+                    <span className={cn('font-mono uppercase transition-colors', active === 'primary' && 'text-primary', active === 'replica' && 'text-insert')}>{operation}</span>
+                    <span className="tabular-nums">Writer {number(writer)} · Readers {number(readers)}</span>
+                  </div>
+                  <div className="relative h-2">
+                    <div className="absolute inset-0 flex overflow-hidden rounded-full bg-muted">
+                      <div className={cn('bg-primary transition-[filter]', active === 'primary' && 'brightness-125')} style={{ width: `${total ? writer / total * 100 : 0}%` }} />
+                      <div className={cn('bg-insert transition-[filter]', active === 'replica' && 'brightness-125')} style={{ width: `${total ? readers / total * 100 : 0}%` }} />
+                    </div>
+                    <div className="absolute inset-0 flex">
+                      <Tooltip
+                        content={`Writer: ${number(writer)} messages`}
+                        className="h-full"
+                        style={{ width: `${total ? writer / total * 100 : 0}%` }}
+                        onMouseEnter={() => setHovered({ operation, target: 'primary' })}
+                        onMouseLeave={() => setHovered(null)}
+                      />
+                      <Tooltip
+                        content={`Readers: ${number(readers)} messages`}
+                        className="h-full"
+                        style={{ width: `${total ? readers / total * 100 : 0}%` }}
+                        onMouseEnter={() => setHovered({ operation, target: 'replica' })}
+                        onMouseLeave={() => setHovered(null)}
+                      />
+                    </div>
                   </div>
                 </div>
               })}
