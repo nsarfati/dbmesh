@@ -12,7 +12,8 @@ import (
 
 // Config is the validated runtime configuration.
 type Config struct {
-	ListenAddr string
+	ListenAddr    string
+	MetricsListen string // empty disables the HTTP metrics listener
 	// Databases is keyed by the database name clients request; the same name is
 	// used upstream.
 	Databases map[string]Database
@@ -62,9 +63,10 @@ const (
 // The file* types mirror config.yaml. Pointers distinguish "unset" from an
 // explicit zero where zero is a valid value.
 type fileConfig struct {
-	Listen    string                  `yaml:"listen"`
-	Databases map[string]fileDatabase `yaml:"databases"`
-	Audit     fileAudit               `yaml:"audit"`
+	Listen        string                  `yaml:"listen"`
+	MetricsListen string                  `yaml:"metrics_listen"`
+	Databases     map[string]fileDatabase `yaml:"databases"`
+	Audit         fileAudit               `yaml:"audit"`
 }
 
 type fileDatabase struct {
@@ -140,7 +142,7 @@ func Parse(data []byte) (Config, error) {
 		return Config{}, fmt.Errorf("invalid config: %w", err)
 	}
 
-	cfg := Config{ListenAddr: raw.Listen, Databases: map[string]Database{}}
+	cfg := Config{ListenAddr: raw.Listen, MetricsListen: raw.MetricsListen, Databases: map[string]Database{}}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListen
 	}

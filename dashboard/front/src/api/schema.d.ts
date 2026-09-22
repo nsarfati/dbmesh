@@ -177,6 +177,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Query Metrics */
+        get: operations["query_metrics_api_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/session": {
         parameters: {
             query?: never;
@@ -438,6 +455,38 @@ export interface components {
         Login: {
             /** Password */
             password: string;
+        };
+        /** MetricRow */
+        MetricRow: {
+            /** Count */
+            count: number;
+            /** Database */
+            database: string;
+            /** Operation */
+            operation: string;
+            /** Outcome */
+            outcome: string;
+            /** Per Second */
+            per_second: number;
+            /** Reader */
+            reader: string;
+            /** Target */
+            target: string;
+        };
+        /** MetricsSnapshot */
+        MetricsSnapshot: {
+            /** P95 Seconds */
+            p95_seconds: number | null;
+            /** Rows */
+            rows: components["schemas"]["MetricRow"][];
+            /** Sampled At */
+            sampled_at: number;
+            /** Targets Total */
+            targets_total: number;
+            /** Targets Up */
+            targets_up: number;
+            /** Window */
+            window: string;
         };
         /** PreviewOut */
         PreviewOut: {
@@ -897,6 +946,38 @@ export interface operations {
                     "application/json": {
                         [key: string]: boolean;
                     };
+                };
+            };
+        };
+    };
+    query_metrics_api_metrics_get: {
+        parameters: {
+            query?: {
+                window?: "5m" | "15m" | "1h" | "6h" | "24h";
+                database?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsSnapshot"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -1,9 +1,10 @@
 # DBMesh dashboard API
 
-The HTTP API behind the DBMesh dashboard. DBMesh itself exposes no HTTP. This
-service does two things:
+The HTTP API behind the DBMesh dashboard. DBMesh exposes an optional HTTP metrics
+endpoint; PostgreSQL traffic uses its separate PostgreSQL listener. This service:
 
 - reads the **audit database** that DBMesh delivers row changes to, directly;
+- queries **Prometheus** for proxy traffic, routing, errors and latency;
 - browses tables and runs structured changes **through the DBMesh proxy**, using
   this repository's Python client, so it sees the same routing and auditing as
   any application. It never connects to the primary or the readers itself.
@@ -36,6 +37,7 @@ Everything else comes from environment variables:
 | `DASHBOARD_PASSWORD` | random      | Shared login password. If unset, a random one is printed at startup |
 | `DASHBOARD_HOST`     | `127.0.0.1` | Bind address                                         |
 | `DASHBOARD_PORT`     | `8000`      | Port                                                 |
+| `DASHBOARD_PROMETHEUS_URL` | `http://127.0.0.1:9090` | Prometheus queried by the authenticated `/api/metrics` endpoint |
 | `DASHBOARD_SECRET`   | random      | Signs session cookies; set it to keep sessions across restarts |
 | `DASHBOARD_STATIC`   | `../front/dist` if built | Built front end to serve; set to another directory, or to empty to serve none |
 

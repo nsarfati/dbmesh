@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+
+scrape_configs:
+  - job_name: dbmesh
+    static_configs:
+      - targets: ["127.0.0.1:9091"]

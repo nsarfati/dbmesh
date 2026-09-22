@@ -1,5 +1,7 @@
 import type { components, operations } from './schema'
 
+export type MetricsSnapshot = components['schemas']['MetricsSnapshot']
+
 // Named after what they are in the UI; the generated names collide with DOM types.
 export type RowEvent = components['schemas']['Event']
 export type FieldChange = components['schemas']['FieldChange']

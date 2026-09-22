@@ -17,6 +17,7 @@ func (t Target) String() string {
 }
 
 type Decision struct {
+	Operation     string // outer SQL statement kind; multi for multiple statements
 	Target        Target
 	Reason        string
 	BeginTx       bool

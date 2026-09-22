@@ -12,13 +12,17 @@ import (
 func Classify(sql string) Decision {
 	tree, err := pgquery.Parse(sql)
 	if err != nil {
-		return Decision{Target: Primary, Reason: "parse error; fail safe", SessionSticky: true}
+		return Decision{Target: Primary, Reason: "parse error; fail safe", SessionSticky: true, Operation: "unknown"}
 	}
 	if len(tree.Stmts) == 0 {
-		return Decision{Target: Primary, Reason: "empty query"}
+		return Decision{Target: Primary, Reason: "empty query", Operation: "empty"}
 	}
 
 	decision := Decision{Target: Replica, Reason: "read-only SELECT"}
+	decision.Operation = "multi"
+	if len(tree.Stmts) == 1 {
+		decision.Operation = statementOperation(tree.Stmts[0].Stmt)
+	}
 	for _, raw := range tree.Stmts {
 		d := classifyStatement(raw.Stmt)
 		if d.Target == Primary && decision.Target != Primary {
@@ -32,6 +36,25 @@ func Classify(sql string) Decision {
 		}
 	}
 	return decision
+}
+
+func statementOperation(node *pgquery.Node) string {
+	switch {
+	case node.GetSelectStmt() != nil:
+		return "select"
+	case node.GetInsertStmt() != nil:
+		return "insert"
+	case node.GetUpdateStmt() != nil:
+		return "update"
+	case node.GetDeleteStmt() != nil:
+		return "delete"
+	case node.GetMergeStmt() != nil:
+		return "merge"
+	case node.GetTransactionStmt() != nil:
+		return "transaction"
+	default:
+		return "other"
+	}
 }
 
 func classifyStatement(node *pgquery.Node) Decision {

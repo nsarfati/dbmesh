@@ -2,10 +2,20 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { toEventQuery, type Filters } from '@/lib/filters'
 import { api, queryString } from './client'
 import { SESSION_KEY } from './queryClient'
+import type { MetricsSnapshot } from './types'
 import type { ChangeBody, ChangeOut, EventPage, Facets, PreviewOut, RowEvent, RowsOut, Status, TableList, TableOut } from './types'
 
 export const PAGE_SIZE = 50
 export const LIVE_INTERVAL_MS = 5_000
+
+export function useMetrics(window: string, database: string) {
+  return useQuery({
+    queryKey: ['metrics', window, database],
+    queryFn: () => api<MetricsSnapshot>(`/api/metrics${queryString({ window, database })}`),
+    refetchInterval: 15_000,
+    retry: false,
+  })
+}
 
 export function useSession() {
   return useQuery({

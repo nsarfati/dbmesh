@@ -1,4 +1,4 @@
-import { LogOut, Moon, ScrollText, Sun, Table2 } from 'lucide-react'
+import { Activity, LogOut, Moon, ScrollText, Sun, Table2 } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useLogout, useStatus } from '@/api/hooks'
 import { useTheme } from '@/lib/useTheme'
@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { Button } from './ui/button'
 
 const NAV = [
+  { to: '/metrics', label: 'Metrics', icon: Activity },
   { to: '/explorer', label: 'Explorer', icon: Table2 },
   { to: '/audit', label: 'Audit log', icon: ScrollText },
 ]

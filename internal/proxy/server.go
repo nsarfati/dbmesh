@@ -28,6 +28,7 @@ type Server struct {
 	logger    *slog.Logger
 	auditSink audit.Sink
 	databases map[string]*database
+	metrics   *queryMetrics
 }
 
 // database is the runtime state of one configured database.
@@ -40,6 +41,7 @@ type database struct {
 func NewServer(cfg config.Config, logger *slog.Logger) *Server {
 	s := &Server{cfg: cfg, logger: logger, auditSink: audit.LogSink{Logger: logger},
 		databases: make(map[string]*database, len(cfg.Databases))}
+	s.metrics = newQueryMetrics(cfg)
 	for name, dbCfg := range cfg.Databases {
 		if dbCfg.ReaderPolicy.CheckInterval == 0 {
 			dbCfg.ReaderPolicy = config.DefaultReaderPolicy()
@@ -62,6 +64,11 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	defer ln.Close()
+	closeMetrics, err := s.startMetrics()
+	if err != nil {
+		return err
+	}
+	defer closeMetrics()
 	var background sync.WaitGroup
 	runCtx, stopBackground := context.WithCancel(ctx)
 	defer func() { stopBackground(); background.Wait() }()
@@ -265,7 +272,9 @@ func (s *Server) handleQuery(
 		execErr = audit.SetContext(ctx, target, client.tables, s.cfg.Audit.Sinks, metadata)
 	}
 	if execErr == nil {
+		queryStarted := time.Now()
 		results, execErr = readAll(target.Exec(ctx, sql))
+		s.metrics.observe(client.database, decision.Operation, targetName, readerID, time.Since(queryStarted), results, execErr)
 	}
 	elapsed := time.Since(started)
 

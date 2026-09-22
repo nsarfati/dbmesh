@@ -106,6 +106,10 @@ func TestPsqlListDatabasesIntegration(t *testing.T) {
 	if !strings.Contains(string(out), "postgres") {
 		t.Fatalf("missing database list: %s", out)
 	}
+	// A safe SELECT falls back to the writer when no readers are configured.
+	if got := metricCount(t, server.metrics, map[string]string{"operation": "select", "target": "primary", "reader": "0", "outcome": "success"}); got != 1 {
+		t.Fatalf("fallback metric = %v; want 1", got)
+	}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -216,6 +220,22 @@ func TestASTRoutingIntegration(t *testing.T) {
 				t.Fatalf("detail=%q: reader and lag_bytes must be set exactly for replica routes", details[0])
 			}
 		})
+	}
+	// One message is counted once even when execution stops within a batch.
+	for _, tt := range []struct {
+		labels map[string]string
+		want   float64
+	}{
+		{map[string]string{}, 19},
+		{map[string]string{"target": "replica"}, 4},
+		{map[string]string{"target": "primary"}, 15},
+		{map[string]string{"operation": "multi", "outcome": "success"}, 3},
+		{map[string]string{"operation": "multi", "outcome": "error"}, 2},
+		{map[string]string{"operation": "select", "target": "primary", "outcome": "error"}, 2},
+	} {
+		if got := metricCount(t, server.metrics, tt.labels); got != tt.want {
+			t.Errorf("metrics %v: got %v want %v", tt.labels, got, tt.want)
+		}
 	}
 }
 

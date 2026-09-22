@@ -539,6 +539,97 @@
         "title": "Login",
         "type": "object"
       },
+      "MetricRow": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "number"
+          },
+          "database": {
+            "title": "Database",
+            "type": "string"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "per_second": {
+            "title": "Per Second",
+            "type": "number"
+          },
+          "reader": {
+            "title": "Reader",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "database",
+          "operation",
+          "target",
+          "reader",
+          "outcome",
+          "count",
+          "per_second"
+        ],
+        "title": "MetricRow",
+        "type": "object"
+      },
+      "MetricsSnapshot": {
+        "properties": {
+          "p95_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Seconds"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/MetricRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "sampled_at": {
+            "title": "Sampled At",
+            "type": "number"
+          },
+          "targets_total": {
+            "title": "Targets Total",
+            "type": "integer"
+          },
+          "targets_up": {
+            "title": "Targets Up",
+            "type": "integer"
+          },
+          "window": {
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window",
+          "sampled_at",
+          "targets_up",
+          "targets_total",
+          "rows",
+          "p95_seconds"
+        ],
+        "title": "MetricsSnapshot",
+        "type": "object"
+      },
       "PreviewOut": {
         "properties": {
           "audit_problem": {
@@ -1541,6 +1632,69 @@
           }
         },
         "summary": "Logout"
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "operationId": "query_metrics_api_metrics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "default": "15m",
+              "enum": [
+                "5m",
+                "15m",
+                "1h",
+                "6h",
+                "24h"
+              ],
+              "title": "Window",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "database",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Database"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Metrics"
       }
     },
     "/api/session": {

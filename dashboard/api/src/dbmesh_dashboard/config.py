@@ -28,6 +28,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
     static_dir: Path | None = None  # a built front end to serve, when there is one
+    prometheus_url: str = "http://127.0.0.1:9090"
 
 
 # dashboard/front/dist, next to this package's dashboard/api, when the front end has been built.
@@ -97,4 +98,5 @@ def load_settings(path: str | os.PathLike[str] | None = None, env: Mapping[str, 
         host=env.get("DASHBOARD_HOST", "127.0.0.1"),
         port=int(port),
         static_dir=_static_dir(env),
+        prometheus_url=env.get("DASHBOARD_PROMETHEUS_URL", "http://127.0.0.1:9090"),
     )

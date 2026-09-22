@@ -15,6 +15,7 @@ databases:
 func TestParseMultipleDatabases(t *testing.T) {
 	cfg, err := Parse([]byte(`
 listen: ":7000"
+metrics_listen: "127.0.0.1:9091"
 databases:
   db1:
     writer: {user: w, pwd: "p@ss/word:1", host: "w1:5432", sslmode: disable}
@@ -32,7 +33,7 @@ databases:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":7000" || len(cfg.Databases) != 2 {
+	if cfg.ListenAddr != ":7000" || cfg.MetricsListen != "127.0.0.1:9091" || len(cfg.Databases) != 2 {
 		t.Fatalf("%+v", cfg)
 	}
 	db1 := cfg.Databases["db1"]
@@ -57,7 +58,7 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":6432" || len(cfg.Audit.Sinks) != 0 {
+	if cfg.ListenAddr != ":6432" || cfg.MetricsListen != "" || len(cfg.Audit.Sinks) != 0 {
 		t.Fatalf("%+v", cfg)
 	}
 	if cfg.Audit.Retention != 7*24*time.Hour || cfg.Audit.CleanupInterval != time.Minute || cfg.Audit.CleanupBatch != 1000 {

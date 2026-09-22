@@ -2,8 +2,9 @@
 
 A web dashboard for DBMesh: see every audited row change with its before/after,
 browse tables and run changes through DBMesh, and watch how long replicas take to
-catch up. DBMesh itself exposes no HTTP; the dashboard is a separate, optional
-service built on top of it.
+catch up. A metrics screen shows proxy traffic and routing from Prometheus.
+The dashboard is a separate, optional service; DBMesh exposes only `/metrics`
+over HTTP when configured, on a port separate from PostgreSQL.
 
 ```text
   browser
@@ -48,6 +49,11 @@ make dashboard-front  # the front end on http://localhost:5173, proxying /api to
 root; each part also has its own Makefile.
 
 ## What you can do
+
+- **Metrics**: estimated message counts by operation, writer and individual readers,
+  average messages/second, SQL errors, unknown outcomes and p95 upstream latency.
+  Filter by database and period (5 minutes through 24 hours); refreshes every 15 seconds.
+  Messages containing several statements count once as `multi`.
 
 - **Audit log**: every captured INSERT, UPDATE and DELETE, newest first. Filter by
   table, operation, user, service, request ID and time range; open an event for a

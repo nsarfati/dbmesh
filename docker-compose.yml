@@ -1,4 +1,16 @@
 services:
+  prometheus:
+    image: prom/prometheus:v3.5.1
+    # The demo proxy runs on the host. Linux host networking avoids bridge/firewall
+    # access to the host; Docker Desktop requires its host-networking option.
+    network_mode: host
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.listen-address=127.0.0.1:9090
   audit:
     image: postgres:17
     environment:
@@ -82,4 +94,5 @@ services:
       retries: 60
 
 volumes:
+  prometheus-data:
   audit-data:

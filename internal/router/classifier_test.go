@@ -2,6 +2,29 @@ package router
 
 import "testing"
 
+func TestOperationLabels(t *testing.T) {
+	for _, tt := range []struct{ sql, operation string }{
+		{"/* INSERT */ SELECT ';'", "select"},
+		{"SELECT 1; SELECT 2", "multi"},
+		{"SELECT 1; DELETE FROM users", "multi"},
+		{"INSERT INTO users(name) VALUES ('a')", "insert"},
+		{"WITH x AS (SELECT 1) UPDATE users SET plan='pro'", "update"},
+		{"WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x", "select"},
+		{"DELETE FROM users", "delete"},
+		{"MERGE INTO users u USING users s ON u.id=s.id WHEN MATCHED THEN DELETE", "merge"},
+		{"BEGIN", "transaction"},
+		{"SET search_path=public", "other"},
+		{"SELECT invalid syntax !!!", "unknown"},
+		{"-- comment", "empty"},
+	} {
+		for _, state := range []SessionState{{}, {InTransaction: true}, {StickyPrimary: true}} {
+			if got := Route(tt.sql, state).Operation; got != tt.operation {
+				t.Errorf("%q: got %s want %s", tt.sql, got, tt.operation)
+			}
+		}
+	}
+}
+
 func TestClassify(t *testing.T) {
 	tests := []struct {
 		name   string

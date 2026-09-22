@@ -17,6 +17,7 @@ from .config import Settings
 from .explorer import Explorer, ExplorerError
 from .explorer_api import build_router as build_explorer_router
 from .static import install_front, install_headers, usable
+from .metrics import MetricsSnapshot, MetricsStore, Window
 
 
 class Login(BaseModel):
@@ -63,11 +64,13 @@ class Status(BaseModel):
     databases: list[str]
 
 
-def create_app(settings: Settings, store: AuditStore | None = None, explorer: Explorer | None = None) -> FastAPI:
+def create_app(settings: Settings, store: AuditStore | None = None, explorer: Explorer | None = None,
+               metrics: MetricsStore | None = None) -> FastAPI:
     store = store or AuditStore(settings.audit_url)
     explorer = explorer or Explorer(settings, store)
     signer = SessionSigner(settings.secret)
     throttle = LoginThrottle()
+    metrics = metrics or MetricsStore(settings.prometheus_url, settings.databases)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -119,6 +122,10 @@ def create_app(settings: Settings, store: AuditStore | None = None, explorer: Ex
         return {"authenticated": signer.valid(request.cookies.get(COOKIE))}
 
     protected = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
+
+    @protected.get("/metrics")
+    def query_metrics(window: Window = "15m", database: str | None = None) -> MetricsSnapshot:
+        return metrics.snapshot(window, database)
 
     @protected.get("/status")
     def status() -> Status:

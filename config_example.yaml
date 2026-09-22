@@ -8,6 +8,10 @@
 # Address DBMesh accepts PostgreSQL client connections on.
 listen: ":6432"
 
+# Optional HTTP endpoint for Prometheus, separate from PostgreSQL. Empty disables it.
+# The Compose collector uses host networking to reach this loopback listener.
+metrics_listen: "127.0.0.1:9091"
+
 # One entry per database. The key is the database name clients connect to, and
 # the same name is used on the upstream servers. Connections to any other
 # database name are rejected.

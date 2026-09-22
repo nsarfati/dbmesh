@@ -6,6 +6,7 @@ import { createQueryClient } from '@/api/queryClient'
 import { Layout } from '@/components/Layout'
 import { AuditLog } from '@/pages/AuditLog'
 import { Explorer } from '@/pages/Explorer'
+import { Metrics } from '@/pages/Metrics'
 import { Login } from '@/pages/Login'
 import { EmptyState, ErrorBanner } from '@/components/Feedback'
 import { Compass } from 'lucide-react'
@@ -27,6 +28,7 @@ export function Gate() {
         <Route index element={<Navigate to="/audit" replace />} />
         <Route path="audit" element={<AuditLog />} />
         <Route path="explorer" element={<Explorer />} />
+        <Route path="metrics" element={<Metrics />} />
         <Route
           path="*"
           element={<EmptyState icon={<Compass className="size-5" />} title="Page not found">There is nothing at this address.</EmptyState>}

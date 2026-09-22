@@ -302,8 +302,47 @@ tests.
 
 An optional web dashboard shows the audit trail and lets you browse tables and run
 changes through DBMesh, with the SQL, the resulting audit event and how long each
-replica took to catch up. It is a separate service (DBMesh itself exposes no HTTP)
-that reads the audit database and talks to DBMesh as an ordinary client.
+replica took to catch up. It is a separate service that reads the audit database,
+talks to DBMesh as an ordinary client, and queries Prometheus for traffic metrics.
+
+### Prometheus metrics
+
+Set `metrics_listen: "127.0.0.1:9091"` in `config.yaml` and restart DBMesh.
+An omitted or empty setting disables the endpoint. Start the collector with
+`docker compose up -d prometheus`, then open **Metrics** in the dashboard.
+The dashboard API uses `DASHBOARD_PROMETHEUS_URL` (default `http://127.0.0.1:9090`).
+Restart the dashboard API and rebuild the front end (`make dashboard`) after updating.
+
+The Compose collector uses **host networking** because the demo proxy runs on the
+host. This works on Linux; Docker Desktop needs host networking enabled. Both
+Prometheus (`:9090`) and the proxy metrics listener (`:9091`) bind to loopback in
+this setup. For a remote collector, configure a reachable metrics address and
+change `docker/prometheus/prometheus.yml`. The metrics listener has no authentication;
+keep it on a trusted interface. PostgreSQL remains on its own port (`:6432`).
+
+Prometheus scrapes `GET /metrics` every 15 seconds and retains samples for 7 days
+in the `prometheus-data` volume. No HTTP request occurs in the query path. Metrics
+update in memory and the proxy continues working when Prometheus is unavailable.
+
+- `dbmesh_queries_total{database,operation,target,reader,outcome}` counts **completed
+  attempts to execute client Simple Query messages upstream**, once per message.
+  `target` is the actual `primary` or `replica`, including reader fallback; `reader`
+  is `0` for the writer and the configured 1-based reader number otherwise.
+- `operation` is the outer AST statement kind: `select`, `insert`, `update`,
+  `delete`, `merge`, `transaction`, `other`, `empty`, or `unknown` (parse failure).
+  Several statements in a parsed message use `multi`, even if execution stops early.
+  A SELECT with a modifying CTE remains `select`, with its actual primary destination.
+- `outcome` is `success`, `error` (SQL error), or `unknown` (transport failure).
+  Success does not imply a transaction committed. Requests rejected before execution,
+  internal health queries and audit setup/delivery queries are excluded.
+- `dbmesh_query_duration_seconds{database,target,reader}` is a histogram of upstream
+  execution and result-reading time, excluding routing, audit setup and client delivery.
+
+Period totals use `sum(increase(...))` and rates use `sum(rate(...))`, applying the
+function to each counter before aggregation to handle restarts. Totals are estimates
+and may be fractional; scraping can miss activity before a first sample or around a
+restart. This is monitoring, not an exact audit ledger. Allow at least two scrapes
+after startup. The dashboard distinguishes collection failures from zero traffic.
 
 ```bash
 make db-up && make run      # DBMesh, with audit.sinks configured
