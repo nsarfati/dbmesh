@@ -75,6 +75,7 @@ def load_settings(path: str | os.PathLike[str] | None = None, env: Mapping[str, 
     # separate services (e.g. two Railway services) and can't both dial "localhost".
     proxy_addr = raw.get("dashboard_proxy_addr") or raw.get("listen") or ":6432"
     proxy_host, proxy_port = _proxy_address(str(proxy_addr))
+    prometheus_url = raw.get("prometheus_url") or "http://127.0.0.1:9090"
 
     password = env.get("DASHBOARD_PASSWORD", "")
     generated = not password
@@ -95,5 +96,5 @@ def load_settings(path: str | os.PathLike[str] | None = None, env: Mapping[str, 
         host=env.get("DASHBOARD_HOST", "127.0.0.1"),
         port=int(port),
         static_dir=_static_dir(env),
-        prometheus_url=env.get("DASHBOARD_PROMETHEUS_URL", "http://127.0.0.1:9090"),
+        prometheus_url=prometheus_url,
     )

@@ -46,6 +46,13 @@ def test_dashboard_proxy_addr_overrides_listen(tmp_path):
     assert (s.proxy_host, s.proxy_port) == ("dbmesh-proxy.railway.internal", 6432)
 
 
+def test_prometheus_url_from_config_or_default(tmp_path):
+    default = load_settings(write(tmp_path, VALID), env={})
+    assert default.prometheus_url == "http://127.0.0.1:9090"
+    custom = load_settings(write(tmp_path, 'prometheus_url: "http://dbmesh-metrics.railway.internal:9090"\n' + VALID), env={})
+    assert custom.prometheus_url == "http://dbmesh-metrics.railway.internal:9090"
+
+
 def test_password_from_env_or_generated(tmp_path):
     path = write(tmp_path, VALID)
     chosen = load_settings(path, env={"DASHBOARD_PASSWORD": "hunter2"})

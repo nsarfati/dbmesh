@@ -27,8 +27,10 @@ The API reads DBMesh's own `config.yaml` (override with `DBMESH_CONFIG`):
 | From `config.yaml`   | Used for                                          |
 | -------------------- | ------------------------------------------------- |
 | `audit.postgres.url` | The audit database the events are read from       |
-| `listen`             | Where the proxy is (`:6432` becomes `localhost:6432`) |
+| `listen`             | Where the proxy is (`:6432` becomes `localhost:6432`); overridden by `dashboard_proxy_addr` |
+| `dashboard_proxy_addr` | Optional. Where to dial DBMesh when it's a separate service (e.g. Railway) and `listen`'s host isn't reachable |
 | `databases` (keys)   | The databases the dashboard offers                |
+| `prometheus_url`     | Optional, default `http://127.0.0.1:9090`. Prometheus queried by the authenticated `/api/metrics` endpoint |
 
 Everything else comes from environment variables:
 
@@ -37,7 +39,6 @@ Everything else comes from environment variables:
 | `DASHBOARD_PASSWORD` | random      | Shared login password. If unset, a random one is printed at startup |
 | `DASHBOARD_HOST`     | `127.0.0.1` | Bind address                                         |
 | `DASHBOARD_PORT`     | `8000`      | Port                                                 |
-| `DASHBOARD_PROMETHEUS_URL` | `http://127.0.0.1:9090` | Prometheus queried by the authenticated `/api/metrics` endpoint |
 | `DASHBOARD_SECRET`   | random      | Signs session cookies; set it to keep sessions across restarts |
 | `DASHBOARD_STATIC`   | `../front/dist` if built | Built front end to serve; set to another directory, or to empty to serve none |
 

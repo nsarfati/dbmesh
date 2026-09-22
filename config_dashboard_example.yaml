@@ -12,6 +12,10 @@
 # same machine (local dev, docker-compose) — not across separate services.
 dashboard_proxy_addr: "localhost:6432"
 
+# Optional. Defaults to "http://127.0.0.1:9090". Set this when Prometheus runs
+# as a separate service (e.g. Railway) instead of alongside DBMesh.
+# prometheus_url: "http://dbmesh-metrics.railway.internal:9090"
+
 # Same value as audit.postgres.url in DBMesh's own config.yaml: the dashboard
 # reads audit events directly from this database, not through the proxy.
 audit:

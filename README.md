@@ -310,7 +310,7 @@ talks to DBMesh as an ordinary client, and queries Prometheus for traffic metric
 Set `metrics_listen: "127.0.0.1:9091"` in `config.yaml` and restart DBMesh.
 An omitted or empty setting disables the endpoint. Start the collector with
 `docker compose up -d prometheus`, then open **Metrics** in the dashboard.
-The dashboard API uses `DASHBOARD_PROMETHEUS_URL` (default `http://127.0.0.1:9090`).
+The dashboard API reads `prometheus_url` from its config (default `http://127.0.0.1:9090`).
 Restart the dashboard API and rebuild the front end (`make dashboard`) after updating.
 
 The Compose collector uses **host networking** because the demo proxy runs on the
