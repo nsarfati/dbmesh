@@ -573,6 +573,30 @@ failed-transaction status) rather than from guessing at SQL keywords.
   the session sticky to the primary.
 - No connection pooling, failover or leader election.
 
+## Known issues
+
+Found during a code review; not exhaustive and not release-blocking on their own.
+
+- No panic recovery: a panic in a client's connection goroutine crashes the
+  whole process, dropping every other client (`internal/proxy/server.go:106-111`).
+  `newID()` also panics on a `crypto/rand` failure instead of returning an error
+  (`server.go:435-441`).
+- Full SQL text, including inline literals, is logged whenever the log level is
+  raised above the `error` default (`server.go:322-328`,
+  `internal/audit/sink.go:44-55`). Because the proxy only supports the simple
+  query protocol, values from statements like `ALTER USER ... PASSWORD` or an
+  `INSERT` with PII land in plaintext logs, with no redaction.
+- No per-query timeout is enforced by DBMesh itself; a stuck or long-running
+  query pins an upstream connection indefinitely unless the upstream database
+  sets `statement_timeout`.
+- `sslmode` has no safe default or validation in `internal/config/config.go`; an
+  empty value falls back to `prefer`, which does not verify certificates.
+- `Dispatcher.Run`'s discovery loop keeps ticking every 30 seconds after startup
+  with a no-op select (`internal/audit/worker.go:30-65`) — harmless, just unclear.
+- `PostgresSink.Deliver` re-runs the advisory-lock and destination DDL setup on
+  every reconnect, not only on first use (`internal/audit/rows.go:153-177`),
+  adding latency under a flaky network.
+
 ## Roadmap
 
 The next focus is JVM client support together with the PostgreSQL protocol

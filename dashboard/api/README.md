@@ -191,6 +191,49 @@ Errors carry an HTTP status and a message: `400` invalid request or column,
 `404` unknown database or table, `409` constraint violations, `502` DBMesh
 unreachable.
 
+## Known issues
+
+Found during a code review; not exhaustive and not release-blocking on their own.
+
+- The login throttle keys on the raw peer address (`request.client.host`,
+  `main.py:107`) without consulting `X-Forwarded-For`/`X-Real-IP`. Behind a
+  reverse proxy (Railway or any other externally hosted deployment) every
+  request arrives from the same address, so the throttle becomes global: one
+  person mistyping the password locks out everyone else for a minute.
+- Audit queries only catch `UndefinedTable` (`audit.py:122-154`); a real
+  `OperationalError`/`InterfaceError` from a dropped connection propagates as
+  an unhandled 500 instead of the 503 pattern already used for pool timeouts
+  (`main.py:153-171`).
+- The Explorer opens a new `psycopg.connect()` per request instead of pooling
+  (`explorer.py:310-327`), unlike `AuditStore`'s `ConnectionPool`. Pooling here
+  is not a drop-in change because the DSN carries a per-call `audit=<table>`
+  startup option, but the current per-request handshake adds real latency
+  under a busy session.
+- `_wait_for_events` and `_measure_replicas` block with `time.sleep` inside
+  synchronous `def` handlers (`explorer.py:413-491`, up to 30s and 10s), which
+  run on Starlette's shared, limited threadpool. A few concurrent `execute`
+  calls can starve unrelated routes, including login and `/healthz`.
+- The audit connection pool size is hardcoded to 4 (`audit.py:78`) and not
+  configurable; a handful of dashboard tabs polling events/facets/status
+  concurrently can exhaust it, surfacing as false "audit unavailable" 503s.
+- `AuditStore.open()`/`close()` run synchronously inside the async `lifespan`
+  (`main.py:76-83`). Harmless today, but a latent event-loop-blocking pattern
+  if pool startup ever becomes slower.
+- The real `ConnectionPool` lifecycle (open/close wiring in `main.py`) is only
+  exercised when `DBMESH_TEST_AUDIT_URL` is set; the default `make test` run
+  only exercises fakes, so a lifespan regression could ship unnoticed.
+- The generated startup password is printed to stdout (`__main__.py:26`). Fine
+  for local dev; on a hosted deployment it lands in centralized log storage in
+  plaintext.
+- Lifecycle wiring uses `hasattr(store, "open")` / `hasattr(metrics, "close")`
+  (`main.py:77-83`); a typo'd method name would silently no-op instead of
+  failing fast.
+- The Content-Security-Policy allows `style-src 'unsafe-inline'` (`static.py:19`).
+- Explorer's `LIMIT`/`OFFSET` are embedded as SQL literals rather than bind
+  parameters (`explorer.py:361-362`). Not insecure (psycopg escapes them and
+  FastAPI validates the values), just inconsistent with the parameterized style
+  used everywhere else.
+
 ## Tests
 
 Run these commands from `dashboard/api/`. `make test` installs dependencies and

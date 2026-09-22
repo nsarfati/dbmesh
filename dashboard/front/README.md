@@ -132,6 +132,44 @@ src/
 tests/          Vitest suites; helpers.tsx mocks the API with fetch
 ```
 
+## Known issues
+
+Found during a code review; not exhaustive and not release-blocking on their own.
+
+- Live mode refetches every already-loaded page on each 5-second tick, with no
+  `maxPages` (`src/api/hooks.ts:57-67`, `useEvents`). Loading several pages and
+  then enabling Live can cascade into many sequential requests, and since the
+  feed keeps growing, a deep page's cursor can drift and return duplicate or
+  skipped events.
+- No ESLint (or `eslint-plugin-react-hooks`) is configured for the project;
+  nothing enforces hook dependency arrays, which is how the next issue slipped
+  through.
+- `Builder.tsx:104-106`'s `useEffect` is missing `execute` from its dependency
+  array. Currently benign, but fragile to future refactors.
+- `useExecute`'s `onSuccess` invalidates `['rows']`/`['tables']` without
+  scoping to the affected database or table (`hooks.ts:128-138`), refetching
+  every cached table/page from the session instead of just the one that changed.
+- The singular `'table'` query key (`useTable`, `hooks.ts:92-99`) is never
+  invalidated after an execute, so an open table view's `auditable` flag can go
+  stale after DBMesh installs an audit trigger on first write.
+- `sameValue` in `src/lib/explorer.ts:87-94` has a redundant, tautological
+  condition — not a bug, just confusing to read.
+- Custom ARIA widgets (`Segmented`, the mode switches in `FieldInput.tsx` and
+  `SqlBlock.tsx`, `RawTabs` in `EventSheet.tsx`) use `role="radio"`/`role="tab"`
+  without the arrow-key roving-tabindex navigation the ARIA pattern expects;
+  `RawTabs` also has no associated `role="tabpanel"`.
+- No virtualization on the events/data tables. Fine at current page sizes, but
+  combined with the Live mode issue above, a long session can accumulate a
+  large number of DOM rows.
+- `Metrics.tsx` recomputes `.filter`/`.reduce` passes over all rows on every
+  render, including on tooltip hover state. Not a real problem at current data
+  volumes, but a candidate for memoization if it grows.
+- Numeric fields use `inputMode="decimal"` (`FieldInput.tsx:87`), which hides
+  the minus key on many mobile keyboards, making negative values awkward to type.
+- Test gaps: `Layout.tsx`, `useTheme.ts`, the clipboard-denied fallback in
+  `CopyButton.tsx`, and `ReplicationTimeline`/`RouteBadge` in isolation are
+  untested.
+
 ## Tests
 
 `make test` runs Vitest and Testing Library with mocked API responses; no running
