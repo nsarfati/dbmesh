@@ -92,14 +92,21 @@
 @keyframes sheet-out { from { transform: none; } to { transform: translateX(100%); } }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+/* Animates `scale` rather than `transform`, since Tailwind v4's translate-x/y utilities already
+   occupy `transform` for centering; animating that property too would fight the centering and
+   make the dialog jump once the animation's fill reverts. */
+@keyframes dialog-in { from { opacity: 0; scale: .96; } to { opacity: 1; scale: 1; } }
+@keyframes dialog-out { from { opacity: 1; scale: 1; } to { opacity: 0; scale: .96; } }
 @keyframes row-flash { from { background: color-mix(in oklab, var(--insert) 32%, transparent); } to { background: transparent; } }
 @keyframes pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .4; transform: scale(.7); } }
 .sheet-content[data-state="open"] { animation: sheet-in .22s cubic-bezier(.2, .8, .2, 1); }
 .sheet-content[data-state="closed"] { animation: sheet-out .16s ease-in; }
 .sheet-overlay[data-state="open"] { animation: fade-in .2s ease-out; }
 .sheet-overlay[data-state="closed"] { animation: fade-out .16s ease-in; }
+.confirm-dialog-content[data-state="open"] { animation: dialog-in .16s cubic-bezier(.2, .8, .2, 1); }
+.confirm-dialog-content[data-state="closed"] { animation: dialog-out .12s ease-in; }
 .live-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
 .row-flash > td { animation: row-flash 2.6s ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .sheet-content, .sheet-overlay, .live-dot, .row-flash > td { animation: none !important; }
+  .sheet-content, .sheet-overlay, .confirm-dialog-content, .live-dot, .row-flash > td { animation: none !important; }
 }

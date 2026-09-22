@@ -7,6 +7,7 @@ import { ErrorBanner } from '@/components/Feedback'
 import { JsonView } from '@/components/JsonView'
 import { SqlBlock } from '@/components/SqlBlock'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Segmented } from '@/components/ui/segmented'
 import { buildChange, initialForm, rowKey, type Context, type FormState, type Mode, type Operation } from '@/lib/explorer'
@@ -95,7 +96,7 @@ function modesFor(operation: Operation, column: TableOut['columns'][number]): Mo
 
 function BuilderForm({ database, table, operation, row, context, onContext, onExecuted }: FormProps) {
   const [form, setForm] = useState<FormState>(() => initialForm(operation, table.columns, row))
-  const [armed, setArmed] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const effective = useMemo<Context>(() => ({ ...context, audit: context.audit && table.auditable }), [context, table.auditable])
   const built = useMemo(() => buildChange(operation, table, form, row, effective), [operation, table, form, row, effective])
 
@@ -104,24 +105,23 @@ function BuilderForm({ database, table, operation, row, context, onContext, onEx
   useEffect(() => {
     if (execute.isError) execute.reset()
   }, [built.body])
-  useEffect(() => {
-    if (!armed) return
-    const id = setTimeout(() => setArmed(false), 4000)
-    return () => clearTimeout(id)
-  }, [armed])
 
   const previewError = built.body && preview.isError ? (preview.error instanceof ApiError ? preview.error.message : 'Could not build the statement') : null
   const auditProblem = built.body ? preview.data?.audit_problem : null
   const canRun = built.body !== null && !previewError && !auditProblem && !execute.isPending
 
+  function runExecute() {
+    if (!built.body) return
+    execute.mutate(built.body, { onSuccess: (result) => onExecuted(result, operation) })
+  }
+
   function run() {
     if (!built.body || !canRun) return
-    if (operation === 'DELETE' && !armed) {
-      setArmed(true)
+    if (operation === 'DELETE') {
+      setConfirmingDelete(true)
       return
     }
-    setArmed(false)
-    execute.mutate(built.body, { onSuccess: (result) => onExecuted(result, operation) })
+    runExecute()
   }
 
   return (
@@ -217,7 +217,7 @@ function BuilderForm({ database, table, operation, row, context, onContext, onEx
             {built.changed.length} {built.changed.length === 1 ? 'field' : 'fields'} to send
           </span>
         )}
-        <Button variant="outline" onClick={() => { setForm(initialForm(operation, table.columns, row)); setArmed(false) }}>
+        <Button variant="outline" onClick={() => setForm(initialForm(operation, table.columns, row))}>
           Reset
         </Button>
         <Button
@@ -227,9 +227,22 @@ function BuilderForm({ database, table, operation, row, context, onContext, onEx
           className={cn(operation === 'DELETE' && 'bg-delete text-white hover:opacity-90')}
         >
           {execute.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Play aria-hidden className="size-4" />}
-          {operation === 'DELETE' ? (armed ? 'Click again to confirm' : 'Delete row') : `Run ${operation.toLowerCase()}`}
+          {operation === 'DELETE' ? 'Delete row' : `Run ${operation.toLowerCase()}`}
         </Button>
       </div>
+
+      {operation === 'DELETE' && (
+        <ConfirmDialog
+          open={confirmingDelete}
+          onOpenChange={setConfirmingDelete}
+          title="Delete this row?"
+          description="This runs a DELETE statement. It cannot be undone from here."
+          confirmLabel="Delete row"
+          onConfirm={() => { setConfirmingDelete(false); runExecute() }}
+        >
+          {row && <JsonView value={row} label="Row to delete as JSON" />}
+        </ConfirmDialog>
+      )}
     </div>
   )
 }

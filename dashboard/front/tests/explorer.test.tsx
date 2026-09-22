@@ -250,7 +250,7 @@ describe('explorer: insert', () => {
 })
 
 describe('explorer: delete, audit options and errors', () => {
-  it('needs a second click to delete', async () => {
+  it('needs confirmation in a popup to delete', async () => {
     const api = explorerApi()
     renderApp('/explorer?table=public.users')
     await userEvent.click(await gridRow('Ada'))
@@ -260,9 +260,24 @@ describe('explorer: delete, audit options and errors', () => {
 
     await userEvent.click(await within(builder).findByRole('button', { name: 'Delete row' }))
     expect(api.to('/api/explorer/demo/execute')).toHaveLength(0)
-    await userEvent.click(within(builder).getByRole('button', { name: 'Click again to confirm' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this row?' })
+    expect(dialog).toHaveTextContent('Ada')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete row' }))
     await screen.findByRole('region', { name: 'Result' })
     expect(lastExecute(api)).toMatchObject({ operation: 'DELETE', key: { id: 1 }, values: {} })
+  })
+
+  it('cancelling the delete popup does not run the statement', async () => {
+    const api = explorerApi()
+    renderApp('/explorer?table=public.users')
+    await userEvent.click(await gridRow('Ada'))
+    await userEvent.click(screen.getByRole('radio', { name: 'Delete' }))
+    const builder = screen.getByRole('region', { name: 'Query builder' })
+    await userEvent.click(await within(builder).findByRole('button', { name: 'Delete row' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this row?' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete this row?' })).not.toBeInTheDocument())
+    expect(api.to('/api/explorer/demo/execute')).toHaveLength(0)
   })
 
   it('does not audit a table DBMesh cannot audit', async () => {
