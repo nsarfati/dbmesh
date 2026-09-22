@@ -1,0 +1,25 @@
+# dashboard/api configuration for deployments where the dashboard and DBMesh
+# run as separate services (e.g. two Railway services) and shouldn't share a
+# config file: this one carries no writer/reader database credentials, only
+# what the dashboard actually needs. DBMesh itself keeps reading its own full
+# config.yaml (see config_example.yaml); this file is never passed to it.
+#
+#   cp config_dashboard_example.yaml config_dashboard.yaml   # then adjust
+#   DBMESH_CONFIG=config_dashboard.yaml python -m dbmesh_dashboard
+
+# Where the dashboard dials DBMesh. Required here: without it, the dashboard
+# falls back to `listen`'s host, which is only correct when both run on the
+# same machine (local dev, docker-compose) — not across separate services.
+dashboard_proxy_addr: "localhost:6432"
+
+# Same value as audit.postgres.url in DBMesh's own config.yaml: the dashboard
+# reads audit events directly from this database, not through the proxy.
+audit:
+  postgres:
+    url: "postgres://dbmesh_audit:dbmesh_audit@localhost:55435/dbmesh_audit?sslmode=disable"
+
+# One entry per database DBMesh serves, matching its config.yaml's `databases`
+# keys. Just the names — DBMesh itself reports reader counts and lag live on
+# every query, so nothing else needs to be declared here.
+databases:
+  demo:

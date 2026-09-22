@@ -1,5 +1,7 @@
-# Local configuration and credentials; keep config_example.yaml in version control.
+# Local configuration and credentials; keep the *_example.yaml files in version control.
 /config.yaml
+/config_proxy.yaml
+/config_dashboard.yaml
 .env
 .env.*
 

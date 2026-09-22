@@ -19,5 +19,7 @@
 **/.env.*
 **/config.yaml
 **/config.yml
+**/config_proxy.yaml
+**/config_dashboard.yaml
 **/*.pem
 **/*.key

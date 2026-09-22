@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DASHBOARD_HOST=0.0.0.0 \
     DASHBOARD_STATIC=/app/dashboard/front/dist \
-    DBMESH_CONFIG=/app/config.yaml
+    DBMESH_CONFIG=/app/config_dashboard.yaml
 
 WORKDIR /app
 COPY clients/python/ /build/clients/python/
@@ -28,5 +28,5 @@ EXPOSE 8000
 
 # Supply config.yaml at runtime; never bake database credentials into the image.
 # Railway supplies PORT; DASHBOARD_PORT remains available for local use.
-# When AWS_ENDPOINT_URL is set, config.yaml is fetched from the Railway bucket first.
-CMD ["sh", "-c", "export DASHBOARD_PORT=\"${PORT:-${DASHBOARD_PORT:-8000}}\"; if [ -n \"$AWS_ENDPOINT_URL\" ]; then aws --endpoint-url \"$AWS_ENDPOINT_URL\" s3 cp \"s3://$AWS_S3_BUCKET_NAME/${BUCKET_CONFIG_KEY:-config.yaml}\" \"$DBMESH_CONFIG\"; fi; exec python -m dbmesh_dashboard"]
+# When AWS_ENDPOINT_URL is set, config_dashboard.yaml is fetched from the Railway bucket first.
+CMD ["sh", "-c", "export DASHBOARD_PORT=\"${PORT:-${DASHBOARD_PORT:-8000}}\"; if [ -n \"$AWS_ENDPOINT_URL\" ]; then aws --endpoint-url \"$AWS_ENDPOINT_URL\" s3 cp \"s3://$AWS_S3_BUCKET_NAME/${BUCKET_CONFIG_KEY:-config_dashboard.yaml}\" \"$DBMESH_CONFIG\"; fi; exec python -m dbmesh_dashboard"]
