@@ -7,7 +7,7 @@ db-down:
 	docker compose down -v
 
 run:
-	go run ./cmd/dbmesh -config config.yaml
+	go run ./cmd/dbmesh -config config_proxy.yaml
 
 test:
 	go test ./...

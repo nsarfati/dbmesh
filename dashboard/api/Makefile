@@ -1,11 +1,11 @@
 # Run from dashboard/api.
 #
-#   make run     # API on http://127.0.0.1:8000, configured from ../../config.yaml
+#   make run     # API on http://127.0.0.1:8000, configured from ../../config_dashboard.yaml
 #   make test
 
 VENV          ?= .venv
 PYTHON        := $(VENV)/bin/python
-DBMESH_CONFIG ?= $(abspath ../../config.yaml)
+DBMESH_CONFIG ?= $(abspath ../../config_dashboard.yaml)
 
 .PHONY: install run test openapi clean
 
