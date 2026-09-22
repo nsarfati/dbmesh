@@ -6,7 +6,7 @@ RUN npm ci
 COPY dashboard/front/ ./
 RUN npm run build
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.13-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
