@@ -4,6 +4,11 @@ FROM prom/prometheus:v3.5.1
 # safe to bake into the image instead of fetching it from the bucket.
 COPY docker/prometheus/prometheus.railway.yml /etc/prometheus/prometheus.yml
 
+# The image runs as "nobody" by default, which can't write to a freshly
+# attached Railway volume (created owned by root). Not publicly exposed and
+# stores nothing sensitive, so running as root here is an acceptable trade.
+USER root
+
 # Same retention as the local Compose setup. Needs a volume mounted at
 # /prometheus (Railway service settings) or this history is lost on restart.
 CMD ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d"]
