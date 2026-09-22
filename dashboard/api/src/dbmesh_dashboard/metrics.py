@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import time
@@ -13,7 +14,9 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 class MetricRow(BaseModel):
@@ -37,12 +40,19 @@ class MetricsSnapshot(BaseModel):
 
 Window = Literal["5m", "15m", "1h", "6h", "24h"]
 LABELS = ("database", "operation", "target", "reader", "outcome")
+# One row per sample fired off in parallel; the pool is sized to match and reused across
+# requests so a call does not pay thread creation/teardown on every poll.
+_QUERIES_PER_SNAPSHOT = 4
 
 
 class MetricsStore:
     def __init__(self, url: str, databases: tuple[str, ...]):
         self.url = url.rstrip("/")
         self.databases = databases
+        self._pool = ThreadPoolExecutor(max_workers=_QUERIES_PER_SNAPSHOT, thread_name_prefix="dbmesh-metrics")
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
     def _query(self, expression: str, timestamp: float) -> list[dict]:
         params = urlencode({"query": expression, "time": timestamp, "timeout": "3s"})
@@ -78,19 +88,32 @@ class MetricsStore:
             'up{job="dbmesh"}',
         ]
         timestamp = time.time()
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            counts, rates, latency, health = list(pool.map(lambda q: self._query(q, timestamp), expressions))
-        try:
-            rate_map = {self._key(row): self._number(row) for row in rates}
-            rows = [MetricRow(**dict(zip(LABELS, self._key(row))), count=self._number(row),
-                              per_second=rate_map.get(self._key(row), 0)) for row in counts]
-            p95 = float(latency[0]["value"][1]) if latency else float("nan")
-            up = sum(self._number(row) == 1 for row in health)
-        except (ValueError, KeyError, TypeError, IndexError):
-            raise HTTPException(503, "Prometheus returned invalid metric samples") from None
+        counts, rates, latency, health = list(self._pool.map(lambda q: self._query(q, timestamp), expressions))
+
+        rate_map: dict[tuple[str, ...], float] = {}
+        for row in rates:
+            value = self._try_number(row, "rate")
+            if value is not None:
+                rate_map[self._key(row)] = value
+
+        rows: list[MetricRow] = []
+        for row in counts:
+            count = self._try_number(row, "count")
+            if count is None:
+                continue
+            try:
+                key = self._key(row)
+                rows.append(MetricRow(**dict(zip(LABELS, key)), count=count, per_second=rate_map.get(key, 0)))
+            except (KeyError, TypeError, ValidationError) as err:
+                logger.warning("dropping metric count sample with unexpected labels %r: %s", row, err)
+
+        p95 = self._try_number(latency[0], "p95") if latency else None
+
+        up = sum(1 for row in health if self._try_number(row, "health") == 1)
+
         return MetricsSnapshot(window=window, sampled_at=timestamp, targets_up=up, targets_total=len(health),
                                rows=sorted(rows, key=lambda row: (row.database, row.operation, row.target, row.reader, row.outcome)),
-                               p95_seconds=p95 if math.isfinite(p95) else None)
+                               p95_seconds=p95)
 
     @staticmethod
     def _key(row: dict) -> tuple[str, ...]:
@@ -102,3 +125,16 @@ class MetricsStore:
         if not math.isfinite(value) or value < 0:
             raise ValueError("invalid counter sample")
         return value
+
+    @classmethod
+    def _try_number(cls, row: dict, what: str) -> float | None:
+        """Like _number, but a bad sample is dropped (with a log) rather than failing the whole snapshot.
+
+        A single stray value - for example a fleeting negative rate() extrapolation right after
+        DBMesh restarts and resets its counters - must not take down every other series.
+        """
+        try:
+            return cls._number(row)
+        except (ValueError, KeyError, TypeError, IndexError) as err:
+            logger.warning("dropping invalid Prometheus %s sample %r: %s", what, row, err)
+            return None

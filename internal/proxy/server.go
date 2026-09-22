@@ -291,25 +291,19 @@ func (s *Server) handleQuery(
 			Time: started, QueryID: newID(), ConnectionID: client.connectionID,
 			Context: *metadata, Database: client.database, ClientUser: client.user, ClientAddr: client.addr,
 			SQL: strings.TrimSpace(sql), Target: targetName, Reader: readerID, Duration: elapsed,
-			Outcome: "success", TxBefore: txBefore, TxAfter: string([]byte{status}),
+			TxBefore: txBefore, TxAfter: string([]byte{status}), // Outcome/SQLState set below, unconditionally
 		}
-		auditErr := execErr
+		// Commands/Rows reflect what was actually returned, independent of the outcome below.
+		var resultErr error
 		for _, result := range results {
 			if result.Err != nil {
-				auditErr = result.Err
+				resultErr = result.Err
 				break
 			}
 			event.Commands = append(event.Commands, result.CommandTag.String())
 			event.Rows += result.CommandTag.RowsAffected()
 		}
-		if auditErr != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(auditErr, &pgErr) {
-				event.Outcome, event.SQLState = "error", pgErr.Code
-			} else {
-				event.Outcome = "unknown"
-			}
-		}
+		event.Outcome, event.SQLState = classifyOutcome(execErr, resultErr)
 		if target.IsClosed() {
 			event.TxAfter = "unknown"
 		}

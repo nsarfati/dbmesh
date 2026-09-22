@@ -38,6 +38,14 @@ func Classify(sql string) Decision {
 	return decision
 }
 
+// Operations lists every value Decision.Operation can take: statementOperation's results
+// plus Classify's own "multi", "unknown" and "empty". Callers that need to pre-register
+// per-operation state (such as Prometheus label values, so rate()/increase() has a
+// baseline before an operation is first seen) should range over this instead of keeping
+// a second copy, which can silently drift if a case is added to statementOperation below
+// without updating it here too.
+var Operations = []string{"select", "insert", "update", "delete", "merge", "transaction", "other", "multi", "unknown", "empty"}
+
 func statementOperation(node *pgquery.Node) string {
 	switch {
 	case node.GetSelectStmt() != nil:

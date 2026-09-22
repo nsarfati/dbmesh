@@ -87,6 +87,30 @@ def test_api_auth_validation_and_empty_samples(monkeypatch):
         assert response.json()["targets_total"] == 0
 
 
+def test_thread_pool_is_created_once_and_reused_across_snapshots(monkeypatch):
+    # Spy on the constructor itself: comparing store._pool's identity across calls would pass
+    # even if snapshot() ignored it and made its own pool each time, since nothing would ever
+    # reassign the unused attribute.
+    import dbmesh_dashboard.metrics as metrics_module
+
+    created = []
+    real_executor = metrics_module.ThreadPoolExecutor
+
+    def spy(*args, **kwargs):
+        pool = real_executor(*args, **kwargs)
+        created.append(pool)
+        return pool
+
+    monkeypatch.setattr(metrics_module, "ThreadPoolExecutor", spy)
+    store = MetricsStore("http://unused", ("demo",))
+    monkeypatch.setattr(store, "_query", lambda *args: [])
+    store.snapshot("5m")
+    store.snapshot("15m")
+    assert len(created) == 1, "a pool must not be created per snapshot() call"
+    store.close()
+    assert created[0]._shutdown
+
+
 def test_database_names_are_escaped(monkeypatch):
     queries = []
     store = MetricsStore("http://unused", ('odd"db', 'a.b'))
@@ -95,9 +119,48 @@ def test_database_names_are_escaped(monkeypatch):
     assert any('database=~"odd\\\"db|a\\\\.b"' in q for q in queries)
 
 
-def test_invalid_sample_returns_service_unavailable(monkeypatch):
+def test_a_bad_sample_is_dropped_not_fatal(monkeypatch, caplog):
+    # One invalid series (e.g. a fleeting negative rate() right after DBMesh resets its counters
+    # on restart) must not take down the whole snapshot; it is dropped and logged instead.
+    good = dict(database="demo", operation="select", target="replica", reader="1", outcome="success")
+    bad = dict(database="demo", operation="update", target="primary", reader="0", outcome="success")
+
+    def query(expression, timestamp):
+        if "increase(" in expression:
+            return [sample(5, **good), sample("NaN", **bad)]
+        if "histogram_quantile" in expression:
+            return [sample("NaN")]
+        if expression.startswith("up"):
+            return [sample(1), sample("NaN")]
+        return [sample(0.2, **good), sample(-1, **bad)]
+
+    store = MetricsStore("http://unused", ("demo",))
+    monkeypatch.setattr(store, "_query", query)
+    with caplog.at_level("WARNING"):
+        result = store.snapshot("5m")
+    assert [row.operation for row in result.rows] == ["select"]
+    assert result.rows[0].count == 5 and result.rows[0].per_second == 0.2
+    assert result.p95_seconds is None
+    assert (result.targets_up, result.targets_total) == (1, 2)
+    assert "invalid Prometheus" in caplog.text
+
+
+def test_all_samples_invalid_still_returns_200(monkeypatch):
     store = MetricsStore("http://unused", ("demo",))
     monkeypatch.setattr(store, "_query", lambda *args: [sample("NaN")])
-    with pytest.raises(HTTPException) as err:
-        store.snapshot("5m")
-    assert err.value.status_code == 503
+    result = store.snapshot("5m")
+    assert result.rows == [] and result.p95_seconds is None and result.targets_up == 0
+
+
+def test_a_malformed_row_missing_a_label_is_dropped(monkeypatch, caplog):
+    store = MetricsStore("http://unused", ("demo",))
+
+    def query(expression, timestamp):
+        if "increase(" in expression:
+            return [{"metric": {"database": "demo"}, "value": [100, "1"]}]  # missing labels
+        return []
+
+    monkeypatch.setattr(store, "_query", query)
+    with caplog.at_level("WARNING"):
+        result = store.snapshot("5m")
+    assert result.rows == []

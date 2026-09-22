@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/nsarfati/dbmesh/internal/config"
+	"github.com/nsarfati/dbmesh/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -44,7 +45,7 @@ func newQueryMetrics(cfg config.Config) *queryMetrics {
 			}
 			id := strconv.Itoa(reader)
 			m.duration.WithLabelValues(db, target, id)
-			for _, op := range []string{"select", "insert", "update", "delete", "merge", "transaction", "other", "multi", "unknown", "empty"} {
+			for _, op := range router.Operations {
 				for _, outcome := range []string{"success", "error", "unknown"} {
 					m.queries.WithLabelValues(db, op, target, id, outcome)
 				}
@@ -55,28 +56,40 @@ func newQueryMetrics(cfg config.Config) *queryMetrics {
 }
 
 func (m *queryMetrics) observe(db, operation, target string, reader int, elapsed time.Duration, results []*pgconn.Result, err error) {
-	outcome := "success"
-	if err == nil {
-		for _, result := range results {
-			if result.Err != nil {
-				err = result.Err
-				break
-			}
+	var resultErr error
+	for _, result := range results {
+		if result.Err != nil {
+			resultErr = result.Err
+			break
 		}
 	}
-	// A transport failure means the final result is unknown, even if earlier
-	// commands returned results. SQL errors are confirmed execution failures.
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) {
-			outcome = "error"
-		} else {
-			outcome = "unknown"
-		}
-	}
+	outcome, _ := classifyOutcome(err, resultErr)
 	id := strconv.Itoa(reader)
 	m.queries.WithLabelValues(db, operation, target, id, outcome).Inc()
 	m.duration.WithLabelValues(db, target, id).Observe(elapsed.Seconds())
+}
+
+// classifyOutcome turns a Simple Query message's error(s) into "success", "error" (a SQL
+// error PostgreSQL reported, with its SQLSTATE) or "unknown" (a transport failure whose
+// result is not confirmed, even if some commands already returned results). transportErr
+// always wins over resultErr, since a transport failure means later results are unknown
+// even if earlier ones succeeded; a result-level error is a confirmed execution failure.
+//
+// Used for both the Prometheus outcome label (queryMetrics.observe, above) and the audit
+// event's Outcome/SQLState (in handleQuery), so the two classifications cannot drift apart.
+func classifyOutcome(transportErr, resultErr error) (outcome, sqlState string) {
+	err := transportErr
+	if err == nil {
+		err = resultErr
+	}
+	if err == nil {
+		return "success", ""
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return "error", pgErr.Code
+	}
+	return "unknown", ""
 }
 
 func (s *Server) startMetrics() (func(), error) {

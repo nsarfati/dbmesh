@@ -3,6 +3,7 @@ package router
 import "testing"
 
 func TestOperationLabels(t *testing.T) {
+	seen := map[string]bool{}
 	for _, tt := range []struct{ sql, operation string }{
 		{"/* INSERT */ SELECT ';'", "select"},
 		{"SELECT 1; SELECT 2", "multi"},
@@ -22,6 +23,18 @@ func TestOperationLabels(t *testing.T) {
 				t.Errorf("%q: got %s want %s", tt.sql, got, tt.operation)
 			}
 		}
+		seen[tt.operation] = true
+	}
+	// Operations must list every value this test (and therefore Classify) can produce, so a
+	// caller ranging over it to pre-register per-operation state never misses one silently.
+	for _, op := range Operations {
+		delete(seen, op)
+	}
+	if len(seen) > 0 {
+		t.Fatalf("Operations is missing value(s) produced by Classify: %v", seen)
+	}
+	if len(Operations) != 10 {
+		t.Fatalf("Operations has %d entries; update this count when adding a new one deliberately", len(Operations))
 	}
 }
 

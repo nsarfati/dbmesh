@@ -79,6 +79,8 @@ def create_app(settings: Settings, store: AuditStore | None = None, explorer: Ex
         yield
         if hasattr(store, "close"):
             store.close()
+        if hasattr(metrics, "close"):
+            metrics.close()
 
     app = FastAPI(title="DBMesh dashboard API", lifespan=lifespan)
 

@@ -9,10 +9,11 @@ const number = (n: number) => n.toLocaleString(undefined, { maximumFractionDigit
 const WINDOWS = [['5m', 'Last 5 minutes'], ['15m', 'Last 15 minutes'], ['1h', 'Last hour'], ['6h', 'Last 6 hours'], ['24h', 'Last 24 hours']]
 
 export function Metrics() {
-  const [window, setWindow] = useState('15m')
+  // Named to avoid shadowing the global `window` object.
+  const [timeWindow, setTimeWindow] = useState('15m')
   const [database, setDatabase] = useState('')
   const status = useStatus()
-  const metrics = useMetrics(window, database)
+  const metrics = useMetrics(timeWindow, database)
   const data = metrics.data
   const rows = data?.rows ?? []
   const total = rows.reduce((n, row) => n + row.count, 0)
@@ -50,7 +51,7 @@ export function Metrics() {
           </Select>
         </label>
         <label className="space-y-1 text-xs text-muted-foreground">Period
-          <Select value={window} onChange={(e) => setWindow(e.target.value)} aria-label="Metrics period">
+          <Select value={timeWindow} onChange={(e) => setTimeWindow(e.target.value)} aria-label="Metrics period">
             {WINDOWS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </Select>
         </label>
