@@ -24,6 +24,7 @@ database.
 - [Reader health and replication lag](#reader-health-and-replication-lag)
 - [Correctness rule](#correctness-rule)
 - [Row auditing and the Python client](#row-auditing-and-the-python-client)
+- [Dashboard](#dashboard)
 - [Limitations](#limitations)
 - [Development and testing](#development-and-testing)
 - [Roadmap](#roadmap)
@@ -296,6 +297,22 @@ database.
 
 See [docs/row-audit.md](docs/row-audit.md) for setup, guarantees, limitations and
 tests.
+
+## Dashboard
+
+An optional web dashboard shows the audit trail and lets you browse tables and run
+changes through DBMesh, with the SQL, the resulting audit event and how long each
+replica took to catch up. It is a separate service (DBMesh itself exposes no HTTP)
+that reads the audit database and talks to DBMesh as an ordinary client.
+
+```bash
+make db-up && make run      # DBMesh, with audit.sinks configured
+make dashboard              # builds the front end and serves it on http://127.0.0.1:8000
+```
+
+It is a development and demo tool: keep it on localhost. See
+[dashboard/README.md](dashboard/README.md) for how it works, running it in
+development and its security model.
 
 ## Limitations
 

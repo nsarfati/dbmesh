@@ -27,6 +27,18 @@ class Settings:
     secret: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     host: str = "127.0.0.1"
     port: int = 8000
+    static_dir: Path | None = None  # a built front end to serve, when there is one
+
+
+# dashboard/front/dist, next to this package's dashboard/api, when the front end has been built.
+DEFAULT_STATIC = Path(__file__).resolve().parents[3] / "front" / "dist"
+
+
+def _static_dir(env: Mapping[str, str]) -> Path | None:
+    """DASHBOARD_STATIC picks the directory; set but empty it turns serving off."""
+    if "DASHBOARD_STATIC" in env:
+        return Path(env["DASHBOARD_STATIC"]) if env["DASHBOARD_STATIC"] else None
+    return DEFAULT_STATIC if (DEFAULT_STATIC / "index.html").is_file() else None
 
 
 def _proxy_address(listen: str) -> tuple[str, int]:
@@ -84,4 +96,5 @@ def load_settings(path: str | os.PathLike[str] | None = None, env: Mapping[str, 
         secret=secret.encode() if secret else secrets.token_bytes(32),
         host=env.get("DASHBOARD_HOST", "127.0.0.1"),
         port=int(port),
+        static_dir=_static_dir(env),
     )

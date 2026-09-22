@@ -45,6 +45,13 @@ make run           # http://localhost:5173
 `/api` to `http://127.0.0.1:8000`, keeping the session cookie same-origin. Point
 it elsewhere with `make run DASHBOARD_API=http://host:port`.
 
+## Production build
+
+`make build` writes `dist/`. The API serves it when it finds `dashboard/front/dist`, so
+`make dashboard` in the repository root builds and runs everything as one process, with
+no Node needed at run time. The page loads no inline scripts (the theme is applied by
+`public/theme-init.js`), which lets the API send a strict Content-Security-Policy.
+
 ## Commands
 
 Each `make` target wraps an npm script, so either works.

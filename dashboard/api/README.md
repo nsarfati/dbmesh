@@ -37,6 +37,19 @@ Everything else comes from environment variables:
 | `DASHBOARD_HOST`     | `127.0.0.1` | Bind address                                         |
 | `DASHBOARD_PORT`     | `8000`      | Port                                                 |
 | `DASHBOARD_SECRET`   | random      | Signs session cookies; set it to keep sessions across restarts |
+| `DASHBOARD_STATIC`   | `../front/dist` if built | Built front end to serve; set to another directory, or to empty to serve none |
+
+## Serving the front end
+
+When `dashboard/front/dist` exists (`make build` in `dashboard/front`, or `make dashboard`
+in the repository root), the API serves it: hashed assets with a long cache lifetime,
+and `index.html` for every client-side route, so a page can be reloaded or linked to
+directly. Unknown `/api/...` paths still answer with a JSON `404`, never the page. The
+page is sent with a strict Content-Security-Policy, and every response carries
+`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy:
+no-referrer`. `/api/` responses are sent with `Cache-Control: no-store` because they can
+contain row contents. Without a build the API runs alone, as during front-end
+development.
 
 ## Authentication
 

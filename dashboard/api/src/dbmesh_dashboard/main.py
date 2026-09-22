@@ -16,6 +16,7 @@ from .auth import COOKIE, SESSION_SECONDS, LoginThrottle, SessionSigner, passwor
 from .config import Settings
 from .explorer import Explorer, ExplorerError
 from .explorer_api import build_router as build_explorer_router
+from .static import install_front, install_headers, usable
 
 
 class Login(BaseModel):
@@ -86,9 +87,13 @@ def create_app(settings: Settings, store: AuditStore | None = None, explorer: Ex
         if not signer.valid(request.cookies.get(COOKIE)):
             raise HTTPException(status_code=401, detail="login required")
 
-    @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    app.add_api_route("/healthz", healthz, methods=["GET"])
+    # Uptime checks often use HEAD. It stays out of the schema: two methods on one function would
+    # share an operationId, which OpenAPI forbids and which makes the generated document unstable.
+    app.add_api_route("/healthz", healthz, methods=["HEAD"], include_in_schema=False)
 
     public = APIRouter(prefix="/api")
 
@@ -162,4 +167,8 @@ def create_app(settings: Settings, store: AuditStore | None = None, explorer: Ex
     app.include_router(public)
     app.include_router(protected)
     app.include_router(build_explorer_router(explorer, [Depends(require_session)]))
+    install_headers(app)
+    # Registered last: the catch-all page route must not shadow anything above.
+    if usable(settings.static_dir):
+        install_front(app, settings.static_dir)
     return app
