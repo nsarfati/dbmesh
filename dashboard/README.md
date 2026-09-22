@@ -3,7 +3,7 @@
 A web dashboard for DBMesh: see every audited row change with its before/after,
 browse tables and run changes through DBMesh, and watch how long replicas take to
 catch up. A metrics screen shows proxy traffic and routing from Prometheus.
-The dashboard is a separate, optional service; DBMesh exposes only `/metrics`
+The dashboard runs as a separate service; DBMesh exposes only `/metrics`
 over HTTP when configured, on a port separate from PostgreSQL.
 
 ```text
@@ -27,7 +27,7 @@ itself, so what you see is what any application would see.
 ## Run it
 
 DBMesh must be running, with `audit.sinks: [postgres]` configured, for there to be
-anything to see (`make db-up` and `make run` in the repository root).
+anything to see (`make local-up` and `make run` in the repository root).
 
 **One process** (how you would run it day to day):
 

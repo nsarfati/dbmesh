@@ -1,10 +1,14 @@
 # DBMesh dashboard front end
 
-A single-page app for the [dashboard API](../api/README.md): React, TypeScript,
-Vite and Tailwind CSS, with TanStack Query for data and Radix for the drawer.
-It has no runtime dependency on anything but that API.
+Explore what changed in your PostgreSQL data and the application context behind
+it. The DBMesh dashboard brings audit investigation, data exploration and query
+traffic into one interface, so you can follow a change from its SQL and request
+context to its audit event and visibility on replicas.
 
-Screens:
+For a complete product overview and local demo, see the
+[DBMesh README](../../README.md#dashboard).
+
+## What you can do
 
 - **Audit log**: row changes captured by DBMesh, newest first. Filter by table,
   operation, user, service, request ID and time range; filters live in the URL,
@@ -25,36 +29,74 @@ Screens:
   - After running, the **result** shows the SQL that ran, the audit event with its
     before/after diff (with a link to the Audit log), and how long each replica
     took to show the change.
+- **Metrics**: inspect estimated query counts, messages per second, routing to
+  the writer and individual readers, SQL errors, unknown outcomes and p95 upstream
+  latency. Filter by database and period (5 minutes to 24 hours); the view refreshes
+  every 15 seconds and distinguishes collection failures from zero traffic.
 - **Sign in**: one shared password, set by `DASHBOARD_PASSWORD` when the API starts.
 
 It follows the system light or dark theme (switchable), works on phones, where
 the table becomes cards, and is keyboard operable.
 
+## Technology and API
+
+The interface uses React, TypeScript, Vite and Tailwind CSS, with TanStack Query
+for server data and Radix for dialogs. At runtime it communicates only with the
+[dashboard API](../api/README.md), which handles authentication, audit queries,
+changes through DBMesh and Prometheus queries. Browser code does not connect
+directly to PostgreSQL or Prometheus.
+
 ## Develop
 
-```bash
-# terminal 1: the API, configured from ../../config.yaml
-cd dashboard/api && make run
+Requires Node.js and npm compatible with the locked dependencies, plus Make.
+For example, Node.js 24.15+ on the 24.x line satisfies the declared Node
+requirements. The API requires Python 3.10+.
 
-# terminal 2: the front end, proxying /api to it
-cd dashboard/front
-make run           # http://localhost:5173
+First follow the repository's [Quick start](../../README.md#quick-start) to start
+the internal development environment and DBMesh. From the repository root,
+create the dashboard configuration once:
+
+```bash
+cp config_dashboard.example.yaml config_dashboard.yaml
 ```
 
-`make run` installs the dependencies first when needed. The dev server proxies
-`/api` to `http://127.0.0.1:8000`, keeping the session cookie same-origin. Point
-it elsewhere with `make run DASHBOARD_API=http://host:port`.
+Then run these commands in separate terminals, both starting at the repository
+root:
 
-## Production build
+```bash
+# Terminal 1: API on http://127.0.0.1:8000, using config_dashboard.yaml
+make dashboard-api
+```
 
-`make build` writes `dist/`. The API serves it when it finds `dashboard/front/dist`, so
+```bash
+# Terminal 2: front end on http://localhost:5173
+make dashboard-front
+```
+
+Open the front-end URL and sign in with the password printed by the API, or set
+`DASHBOARD_PASSWORD` when starting it. These root commands delegate to `make run`
+in `dashboard/api/` and `dashboard/front/` respectively.
+
+The front-end Makefile installs dependencies when needed. Vite proxies `/api`
+and `/healthz` to `http://127.0.0.1:8000`, keeping session requests on the browser's
+origin. From `dashboard/front/`, use
+`make run DASHBOARD_API=http://host:port` to select another API.
+
+## Build and serve
+
+From `dashboard/front/`, `make build` type-checks the interface and writes `dist/`.
+The API serves it when it finds `dashboard/front/dist`, so
 `make dashboard` in the repository root builds and runs everything as one process, with
 no Node needed at run time. The page loads no inline scripts (the theme is applied by
 `public/theme-init.js`), which lets the API send a strict Content-Security-Policy.
 
+The dashboard currently targets development and demos. See the
+[security model](../README.md#security) before exposing it beyond localhost.
+
 ## Commands
 
-Each `make` target wraps an npm script, so either works.
+Run these commands from `dashboard/front/`. Make targets install dependencies
+when needed; if you run npm scripts directly, run `npm install` first.
 
 | Command                        | Purpose                                                     |
 | ------------------------------ | ----------------------------------------------------------- |
@@ -69,12 +111,12 @@ Each `make` target wraps an npm script, so either works.
 ## API types
 
 `src/api/schema.d.ts` is generated from the API's committed
-[`openapi.json`](../api/openapi.json), so the front and the API cannot silently
-drift. After changing the API run `make openapi` in `dashboard/api`, then
+[`openapi.json`](../api/openapi.json), to keep the front end aligned with the API
+contract. After changing the API run `make openapi` in `dashboard/api`, then
 `make gen-api` here. A test in the API fails when `openapi.json` is stale.
 
-TypeScript is pinned to 5.x because `openapi-typescript` needs the compiler's
-JavaScript API, which TypeScript 7 no longer ships.
+The project currently uses TypeScript 5.x; check `package.json` and
+`package-lock.json` for the dependency versions used by the build.
 
 ## Layout
 
@@ -86,6 +128,16 @@ src/
                 query builder, SQL preview, result and replication views)
   lib/          pure helpers (time, filters, change summaries, form-to-request
                 logic for the builder), tested on their own
-  pages/        Login, AuditLog, Explorer
+  pages/        Login, AuditLog, Explorer, Metrics
 tests/          Vitest suites; helpers.tsx mocks the API with fetch
 ```
+
+## Tests
+
+`make test` runs Vitest and Testing Library with mocked API responses; no running
+proxy, database or API is required. Run `make typecheck` for TypeScript validation
+and `make build` to verify the application build. Real database and proxy checks
+live in the [API test suite](../api/README.md#tests).
+
+See [Contributing](../../CONTRIBUTING.md) for pull request guidelines and checks
+across the repository.

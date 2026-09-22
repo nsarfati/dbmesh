@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	path := flag.String("config", envOr("DBMESH_CONFIG", "config.yaml"), "path to the YAML configuration file")
+	path := flag.String("config", envOr("DBMESH_CONFIG", "config_proxy.yaml"), "path to the YAML configuration file")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()}))

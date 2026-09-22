@@ -41,6 +41,7 @@ node_modules/
 
 # Python client build and development artifacts.
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/

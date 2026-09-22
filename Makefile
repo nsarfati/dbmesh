@@ -1,9 +1,9 @@
-.PHONY: db-up db-down run test demo dashboard dashboard-api dashboard-front dashboard-build dashboard-test
+.PHONY: local-up local-down run test demo dashboard dashboard-api dashboard-front dashboard-build dashboard-test dashboard-api-test dashboard-front-test
 
-db-up:
+local-up:
 	docker compose up -d
 
-db-down:
+local-down:
 	docker compose down -v
 
 run:
@@ -32,4 +32,10 @@ dashboard-build:
 
 dashboard-test:
 	$(MAKE) -C dashboard/api test
+	$(MAKE) -C dashboard/front test
+
+dashboard-api-test:
+	$(MAKE) -C dashboard/api test
+
+dashboard-front-test:
 	$(MAKE) -C dashboard/front test

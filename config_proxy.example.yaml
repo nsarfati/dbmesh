@@ -53,7 +53,7 @@ databases:
   #     max_lag_bytes: 4194304
 
 # Optional row auditing. Tables are selected per connection in the Python
-# client's DSN; see docs/row-audit.md.
+# client's DSN; see README.md#row-auditing-and-client-support.
 audit:
   sinks: [postgres]
   postgres:

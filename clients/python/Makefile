@@ -1,12 +1,12 @@
 # Build and install the DBMesh Python client. Run from clients/python.
 #
-#   make install VENV=$HOME/code/other-repo/.venv   # into another project's venv
+#   make install VENV=$HOME/code/other-repo/venv   # into another project's venv
 #   make install-dev                                # editable, into this repo's venv
 #
 # VENV must already exist (python3 -m venv <path>). Use an absolute path or
 # $HOME; the shell does not expand "~" inside VAR=~/path for every shell.
 
-VENV   ?= ../../.venv
+VENV   ?= ../../venv
 EXTRAS ?= binary
 PYTHON  = $(abspath $(VENV))/bin/python
 EXTRA_SPEC = $(if $(EXTRAS),[$(EXTRAS)])

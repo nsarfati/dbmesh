@@ -1,46 +1,77 @@
 # DBMesh dashboard API
 
-The HTTP API behind the DBMesh dashboard. DBMesh exposes an optional HTTP metrics
-endpoint; PostgreSQL traffic uses its separate PostgreSQL listener. This service:
+The dashboard API connects the DBMesh audit trail with the tools used to explore
+and change application data. It powers three workflows:
 
-- reads the **audit database** that DBMesh delivers row changes to, directly;
-- queries **Prometheus** for proxy traffic, routing, errors and latency;
-- browses tables and runs structured changes **through the DBMesh proxy**, using
-  this repository's Python client, so it sees the same routing and auditing as
-  any application. It never connects to the primary or the readers itself.
+- **Investigate changes**: find captured row changes by table, user, request or
+  service, then inspect their before/after values and changed fields.
+- **Explore and change data**: browse tables, preview SQL and execute structured
+  INSERT, UPDATE and DELETE operations with audit context. Follow the resulting
+  event and observe when replicas reflect the change.
+- **Understand traffic**: report query volume, routing, errors and latency for
+  the selected database and time period.
 
-> **Development and demo tool.** It exposes row images (which may contain
-> personal data) and can write to your databases through the proxy, which does
-> not authenticate its clients. Anyone who can log in can change data. Keep it
-> on localhost, or behind a reverse proxy with TLS. Never expose it directly to
-> the internet.
+It serves the [dashboard front end](../front/README.md). For the complete product
+and local demo, start with the [DBMesh README](../../README.md#dashboard).
 
-## Run
+## How it connects
+
+The API reads events directly from the audit database, queries Prometheus for
+metrics, and sends application queries and changes through DBMesh using the
+[Python client](../../clients/python/README.md). It does not connect directly to
+application primaries or replicas. Routing and row capture remain the proxy's
+responsibility.
+
+## Run locally
+
+Requires Python 3.10+ and Make. First follow the repository's
+[Quick start](../../README.md#quick-start) to start the internal development
+environment and proxy. `make local-up` already starts the audit database and
+Prometheus. Row capture requires the proxy's audit sink configuration.
+
+From `dashboard/api/`, create the dashboard configuration once:
 
 ```bash
-cp ../../config_example.yaml ../../config.yaml   # once; the same file DBMesh uses
+cp ../../config_dashboard.example.yaml ../../config_dashboard.yaml
 make run
 ```
 
-The API reads DBMesh's own `config.yaml` (override with `DBMESH_CONFIG`):
+`make run` creates a local `.venv`, installs the API and Python client, and starts
+Uvicorn at http://127.0.0.1:8000. Sign in with the password printed at startup,
+or choose one with `DASHBOARD_PASSWORD=secret make run`.
 
-| From `config.yaml`   | Used for                                          |
-| -------------------- | ------------------------------------------------- |
-| `audit.postgres.url` | The audit database the events are read from       |
-| `listen`             | Where the proxy is (`:6432` becomes `localhost:6432`); overridden by `dashboard_proxy_addr` |
-| `dashboard_proxy_addr` | Optional. Where to dial DBMesh when it's a separate service (e.g. Railway) and `listen`'s host isn't reachable |
-| `databases` (keys)   | The databases the dashboard offers                |
-| `prometheus_url`     | Optional, default `http://127.0.0.1:9090`. Prometheus queried by the authenticated `/api/metrics` endpoint |
+To build and serve the full dashboard, run `make dashboard` from the repository
+root after creating the configuration file above. For front-end development,
+run the [Vite development server](../front/README.md#develop) separately.
 
-Everything else comes from environment variables:
+## Configuration
 
-| Variable             | Default     | Meaning                                              |
-| -------------------- | ----------- | ---------------------------------------------------- |
-| `DASHBOARD_PASSWORD` | random      | Shared login password. If unset, a random one is printed at startup |
-| `DASHBOARD_HOST`     | `127.0.0.1` | Bind address                                         |
-| `DASHBOARD_PORT`     | `8000`      | Port                                                 |
-| `DASHBOARD_SECRET`   | random      | Signs session cookies; set it to keep sessions across restarts |
-| `DASHBOARD_STATIC`   | `../front/dist` if built | Built front end to serve; set to another directory, or to empty to serve none |
+The API Makefile selects the root `config_dashboard.yaml` via `DBMESH_CONFIG`.
+This file is separate from the proxy's `config_proxy.yaml` and does not need
+writer or reader credentials. Its database names and audit destination must
+match the proxy configuration.
+
+| Setting | Purpose |
+| ------- | ------- |
+| `audit.postgres.url` | Required. Audit database to read events from. |
+| `dashboard_proxy_addr` | Address used to connect to DBMesh, such as `localhost:6432`. Takes precedence over `listen`. |
+| `listen` | Fallback proxy address when `dashboard_proxy_addr` is absent; defaults to `:6432`. Wildcard hosts are converted to `localhost`. |
+| `databases` | Required database-name mapping. Only the keys are used; they must identify databases served by DBMesh. |
+| `prometheus_url` | Prometheus address; defaults to `http://127.0.0.1:9090`. |
+
+Use `make run DBMESH_CONFIG=/absolute/path/to/config_dashboard.yaml` to select
+another file. When invoking `python -m dbmesh_dashboard` directly, set
+`DBMESH_CONFIG` explicitly: the Python loader still falls back to `config.yaml`
+in the current directory when the variable is absent.
+
+| Variable | Default | Meaning |
+| -------- | ------- | ------- |
+| `DASHBOARD_PASSWORD` | random | Shared login password; generated value is printed at startup. |
+| `DASHBOARD_HOST` | `127.0.0.1` | Bind address. |
+| `DASHBOARD_PORT` | `8000` | Port. |
+| `DASHBOARD_SECRET` | random | Signs session cookies; set it to keep sessions across restarts. |
+| `DASHBOARD_STATIC` | `dashboard/front/dist` if built | Built front-end directory; set an empty value to disable static serving. |
+| `DASHBOARD_LOG_LEVEL` | `error` | Uvicorn log level. |
 
 ## Serving the front end
 
@@ -54,7 +85,13 @@ no-referrer`. `/api/` responses are sent with `Cache-Control: no-store` because 
 contain row contents. Without a build the API runs alone, as during front-end
 development.
 
-## Authentication
+## Authentication and access
+
+The dashboard currently supports development and demos. Anyone who can sign in
+can view captured row contents and change application data through DBMesh.
+Dashboard login does not authenticate clients at the PostgreSQL proxy. Keep the
+API on localhost for local use; externally hosted demos need a reverse proxy
+with TLS. See the [dashboard security model](../README.md#security).
 
 One shared password. `POST /api/login` with `{"password": "..."}` sets a signed,
 `HttpOnly`, `SameSite=Strict` session cookie valid for 8 hours. Every `/api/*`
@@ -70,6 +107,7 @@ Interactive documentation is served at `/docs` (OpenAPI at `/openapi.json`).
 | --------------------------- | ------------------------------------------------------------ |
 | `GET /healthz`              | Liveness                                                     |
 | `POST /api/login`, `/api/logout`, `GET /api/session` | Session                                |
+| `GET /api/metrics` | Proxy traffic, routing, errors and latency from Prometheus |
 | `GET /api/status`           | Audit database reachability and configured databases         |
 | `GET /api/events`           | Row-change events, newest first, with filters and cursor paging |
 | `GET /api/events/{id}`      | One event, with before/after and the list of changed fields  |
@@ -87,14 +125,26 @@ Paging is keyset-based, so it stays stable while new events arrive. Before the
 first delivery the audit table does not exist yet, and the endpoints return
 empty results rather than errors.
 
+## Metrics
+
+`GET /api/metrics` requires a dashboard session. It accepts `database` (a
+configured database name; omit for all configured databases) and `window`
+(`5m`, `15m`, `1h`, `6h` or `24h`, default `15m`).
+
+Enable the proxy's `metrics_listen` and configure Prometheus scraping as described
+in [Prometheus metrics](../../README.md#prometheus-metrics). Counts are estimates
+from scraped counters, not an exact audit ledger. The response includes collection
+health so the interface can distinguish unavailable metrics from zero traffic.
+
 ## Explorer
 
-The Explorer needs DBMesh running (its `listen` address in `config.yaml`) and, for
-auditing, `audit.sinks: [postgres]` so events reach the audit database.
+The Explorer needs DBMesh reachable at `dashboard_proxy_addr` and, for auditing,
+`audit.sinks: [postgres]` in the proxy's `config_proxy.yaml` so events reach the
+audit database.
 
 **Reading.** Table metadata is always read from the primary, so a table created a
-moment ago is visible. Rows are read from a replica by default, which can show
-slightly old data; pass `source=primary` to pin the read to the primary. Every
+moment ago is visible. Row reads are eligible for replicas by default, with primary fallback, and can
+show slightly old data; pass `source=primary` to pin the read to the primary. Every
 response carries the `route` DBMesh reported: `target`, `reader`, `reason`,
 `duration_us` and `lag_bytes` (the last monitored lag of the serving reader).
 
@@ -143,14 +193,19 @@ unreachable.
 
 ## Tests
 
+Run these commands from `dashboard/api/`. `make test` installs dependencies and
+runs pytest. Integration checks skip unless their environment variables are set;
+they do not read test connection settings from the dashboard YAML.
+
 ```bash
-make test                                            # unit tests
+make test                                            # unit tests when integration variables are unset
 DBMESH_TEST_AUDIT_URL='postgres://dbmesh_audit:dbmesh_audit@localhost:55435/dbmesh_audit?sslmode=disable' \
   make test                                          # plus PostgreSQL integration tests
 ```
 
 The audit integration tests create and drop their own database, so they never
-read or modify real audit data.
+read or modify existing audit events. The test role needs permission to create
+and drop a database; use the local development cluster.
 
 The Explorer round-trip test goes through a running DBMesh that delivers to the
 same audit database. It creates and drops its own table and removes its events:
@@ -159,5 +214,13 @@ same audit database. It creates and drops its own table and removes its events:
 DBMESH_TEST_PROXY=localhost:6432 \
 DBMESH_TEST_AUDIT_URL='postgres://dbmesh_audit:dbmesh_audit@localhost:55435/dbmesh_audit?sslmode=disable' \
 DBMESH_TEST_WRITER_URL='postgres://dbmesh:dbmesh@localhost:55432/demo?sslmode=disable' \
-  make test        # DBMESH_TEST_READERS defaults to 2; DBMESH_TEST_DATABASE to demo
+  make test        # DBMESH_TEST_DATABASE defaults to demo
 ```
+
+`DBMESH_TEST_PROXY` takes `host:port`, unlike the Python client's
+`DBMESH_TEST_PROXY_URL` URI. Set `DBMESH_TEST_WRITER_URL` as shown to clean up
+source outbox events as well as destination events.
+
+See [Contributing](../../CONTRIBUTING.md#check-your-changes) for the checks across
+the repository. After changing the API contract, run `make openapi` here and
+`make gen-api` in `dashboard/front/`; include both generated files with the change.
