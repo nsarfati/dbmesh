@@ -22,7 +22,6 @@ class Settings:
     proxy_port: int
     databases: tuple[str, ...]
     password: str
-    readers: Mapping[str, int] = field(default_factory=dict)  # configured readers per database
     generated_password: bool = False
     secret: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     host: str = "127.0.0.1"
@@ -76,10 +75,6 @@ def load_settings(path: str | os.PathLike[str] | None = None, env: Mapping[str, 
     # separate services (e.g. two Railway services) and can't both dial "localhost".
     proxy_addr = raw.get("dashboard_proxy_addr") or raw.get("listen") or ":6432"
     proxy_host, proxy_port = _proxy_address(str(proxy_addr))
-    readers = {}
-    for name, entry in databases.items():
-        hosts = ((entry or {}).get("reader") or {}).get("host") if isinstance(entry, dict) else None
-        readers[str(name)] = len(hosts) if isinstance(hosts, list) else 0
 
     password = env.get("DASHBOARD_PASSWORD", "")
     generated = not password
@@ -94,7 +89,6 @@ def load_settings(path: str | os.PathLike[str] | None = None, env: Mapping[str, 
         proxy_host=proxy_host,
         proxy_port=proxy_port,
         databases=tuple(databases),
-        readers=readers,
         password=password,
         generated_password=generated,
         secret=secret.encode() if secret else secrets.token_bytes(32),

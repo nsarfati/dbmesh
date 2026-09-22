@@ -429,10 +429,11 @@ class Explorer:
 
     def _measure_replicas(self, database: str, info: TableInfo, operation: str, key: Mapping[str, Any],
                           row: dict[str, Any] | None, timeout: float) -> ReplicationReport:
-        """Poll the row through DBMesh until each reader shows the change; this is the observed replication delay."""
-        readers = self._settings.readers.get(database, 0)
-        if readers == 0:
-            return ReplicationReport([], 0, False, "no readers configured for this database")
+        """Poll the row through DBMesh until every reader shows the change; this is the observed replication delay.
+
+        The reader count isn't declared anywhere in dashboard config — DBMesh reports it on every route NOTICE
+        (`route.readers`), so it's learned from the first poll response instead.
+        """
         if not info.primary_key:
             return ReplicationReport([], 0, False, "table has no primary key to poll")
         source = row if operation != "DELETE" else key
@@ -451,6 +452,7 @@ class Explorer:
         stale: dict[int, int] = {}
         lag: dict[int, int | None] = {}
         fallback_reads = consecutive_fallbacks = 0
+        readers = None  # learned from the first route NOTICE
         timed_out = False
         with self._session(database) as conn:  # unpinned, so reads round-robin over the readers
             while True:
@@ -458,6 +460,8 @@ class Explorer:
                 route = conn.last_route
                 elapsed_ms = int((self._clock() - started) * 1000)
                 current = dict(zip(names, map(jsonable, fetched[0]))) if fetched else None
+                if route is not None:
+                    readers = route.readers
                 if route is None or route.target != "replica":
                     fallback_reads += 1
                     consecutive_fallbacks += 1
@@ -468,14 +472,20 @@ class Explorer:
                         seen.setdefault(route.reader, elapsed_ms)
                     else:
                         stale[route.reader] = stale.get(route.reader, 0) + 1
-                if len(seen) >= readers:
+                if readers == 0 or (readers and len(seen) >= readers):
                     break
                 if consecutive_fallbacks >= 5 or self._clock() - started >= timeout:
                     timed_out = self._clock() - started >= timeout
                     break
                 self._sleep(0.02)
-        note = "reads fell back to the primary: no reader was eligible" if consecutive_fallbacks >= 5 else None
+        if readers == 0:
+            note = "no readers configured for this database"
+        elif consecutive_fallbacks >= 5:
+            note = "reads fell back to the primary: no reader was eligible"
+        else:
+            note = None
+        indices = range(1, readers + 1) if readers else sorted(set(seen) | set(stale) | set(lag))
         return ReplicationReport(
-            [ReaderReport(r, seen.get(r), stale.get(r, 0), lag.get(r)) for r in range(1, readers + 1)],
+            [ReaderReport(r, seen.get(r), stale.get(r, 0), lag.get(r)) for r in indices],
             fallback_reads, timed_out, note,
         )

@@ -23,6 +23,7 @@ class Route:
     duration_us: int
     lag_bytes: "int | None" = None  # last monitor sample of the serving reader
     fallback: bool = False  # a read that could not use a reader
+    readers: int = 0  # total readers configured for this database
 
 
 def _parse_route(diag):
@@ -34,7 +35,7 @@ def _parse_route(diag):
         return Route(
             target=str(data["target"]), reader=int(data.get("reader", 0)), reason=str(data.get("reason", "")),
             duration_us=int(data.get("duration_us", 0)), lag_bytes=data.get("lag_bytes"),
-            fallback=bool(data.get("fallback", False)),
+            fallback=bool(data.get("fallback", False)), readers=int(data.get("readers", 0)),
         )
     except (ValueError, KeyError, TypeError):
         return None

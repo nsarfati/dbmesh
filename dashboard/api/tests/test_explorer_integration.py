@@ -1,8 +1,7 @@
 """End to end through a running DBMesh. Opt in with DBMESH_TEST_PROXY=host:port and DBMESH_TEST_AUDIT_URL.
 
 DBMesh must be running with `audit.sinks: [postgres]` delivering to DBMESH_TEST_AUDIT_URL. The test creates and
-drops its own table. Set DBMESH_TEST_WRITER_URL to also clean the source outbox rows it produced, and
-DBMESH_TEST_READERS to the number of readers DBMesh has configured (default 2).
+drops its own table. Set DBMESH_TEST_WRITER_URL to also clean the source outbox rows it produced.
 """
 
 import os
@@ -20,7 +19,6 @@ PROXY = os.environ.get("DBMESH_TEST_PROXY")
 AUDIT_URL = os.environ.get("DBMESH_TEST_AUDIT_URL")
 WRITER_URL = os.environ.get("DBMESH_TEST_WRITER_URL")
 DATABASE = os.environ.get("DBMESH_TEST_DATABASE", "demo")
-READERS = int(os.environ.get("DBMESH_TEST_READERS", "2"))
 
 pytestmark = pytest.mark.skipif(not (PROXY and AUDIT_URL), reason="set DBMESH_TEST_PROXY and DBMESH_TEST_AUDIT_URL")
 
@@ -30,7 +28,7 @@ def scratch():
     host, _, port = PROXY.rpartition(":")
     table = f"dashboard_it_{uuid.uuid4().hex[:10]}"
     settings = Settings(audit_url=AUDIT_URL, proxy_host=host or "localhost", proxy_port=int(port), databases=(DATABASE,),
-                        readers={DATABASE: READERS}, password="x")
+                        password="x")
     store = AuditStore(AUDIT_URL)
     store.open()
     explorer = Explorer(settings, store)

@@ -200,8 +200,8 @@ class FakeConn:
         self.closed = True
 
 
-def route(target="primary", reader=0, lag=None, fallback=False):
-    return dbmesh.Route(target, reader, "test", 100, lag_bytes=lag, fallback=fallback)
+def route(target="primary", reader=0, lag=None, fallback=False, readers=0):
+    return dbmesh.Route(target, reader, "test", 100, lag_bytes=lag, fallback=fallback, readers=readers)
 
 
 class Clock:
@@ -230,7 +230,7 @@ class FakeStore:
 
 
 SETTINGS = Settings(audit_url="x", proxy_host="localhost", proxy_port=6432, databases=("demo",),
-                    readers={"demo": 2}, password="p", secret=b"s" * 32)
+                    password="p", secret=b"s" * 32)
 
 METADATA = {
     "information_schema.columns": (
@@ -396,7 +396,7 @@ def test_change_runs_audited_and_reports_events_and_replication():
 
     def post_write(text, params, conn):
         reader, visible = next(reads)
-        conn.last_route = route("replica", reader, lag=0)
+        conn.last_route = route("replica", reader, lag=0, readers=2)
         return FakeCursor(("id", "name", "plan"), [(1, "Ada", "enterprise" if visible else "pro")])
 
     explorer, conns = make_explorer(change_responder(post_write), store=FakeStore(arrive_after=2))
@@ -447,7 +447,7 @@ def test_no_rows_affected_means_no_events_to_wait_for_and_no_replication_poll():
 
 def test_replica_measurement_gives_up_when_every_read_falls_back_to_the_primary():
     def post_write(text, params, conn):
-        conn.last_route = route("primary", fallback=True)
+        conn.last_route = route("primary", fallback=True, readers=2)  # readers exist but none is eligible
         return FakeCursor(("id", "name", "plan"), [(1, "Ada", "enterprise")])
     explorer, _ = make_explorer(change_responder(post_write))
     replication = explorer.execute("demo", update_request(audit=False)).replication
@@ -457,7 +457,7 @@ def test_replica_measurement_gives_up_when_every_read_falls_back_to_the_primary(
 
 def test_replica_measurement_times_out_on_a_stuck_replica():
     def post_write(text, params, conn):
-        conn.last_route = route("replica", 1, lag=999)
+        conn.last_route = route("replica", 1, lag=999, readers=1)
         return FakeCursor(("id", "name", "plan"), [(1, "Ada", "pro")])  # never catches up
     explorer, _ = make_explorer(change_responder(post_write))
     replication = explorer.execute("demo", update_request(audit=False, measure_seconds=0.3)).replication
@@ -472,7 +472,7 @@ def test_delete_is_visible_once_the_row_is_gone_from_the_reader():
         if text.startswith("DELETE"):
             conn.last_route = route("primary")
             return FakeCursor(("id", "name", "plan"), [(1, "Ada", "x")])
-        conn.last_route = route("replica", 1 + (next_reader := len(conn.statements) % 2), lag=0)
+        conn.last_route = route("replica", 1 + (next_reader := len(conn.statements) % 2), lag=0, readers=2)
         rows = next(seen)
         return FakeCursor(("id", "name", "plan") if rows else (), rows)  # an empty result may lack a description
     explorer, _ = make_explorer(metadata_or(respond))
@@ -482,11 +482,10 @@ def test_delete_is_visible_once_the_row_is_gone_from_the_reader():
     assert all(r.visible_after_ms is not None for r in result.replication.readers)
 
 
-def test_measurement_is_skipped_without_readers_or_primary_key():
-    no_readers = Settings(audit_url="x", proxy_host="h", proxy_port=1, databases=("demo",), readers={"demo": 0},
-                          password="p", secret=b"s" * 32)
-    explorer, _ = make_explorer(change_responder(lambda *a: FakeCursor()), settings=no_readers)
-    assert "no readers" in explorer.execute("demo", update_request(audit=False)).replication.note
+def test_measurement_reports_no_reader_when_routes_never_leave_the_primary():
+    explorer, _ = make_explorer(change_responder(lambda *a: FakeCursor()))
+    replication = explorer.execute("demo", update_request(audit=False)).replication
+    assert replication.readers == [] and "no reader" in replication.note
 
 
 def test_unauditable_table_is_rejected_only_when_auditing_is_requested():

@@ -340,11 +340,11 @@ func TestRouteDetail(t *testing.T) {
 		want     routeInfo
 	}{
 		{"write", "primary", 0, router.Decision{Target: router.Primary, Reason: "write statement"},
-			routeInfo{Target: "primary", Reason: "write statement", DurationUS: 1500}},
+			routeInfo{Target: "primary", Readers: 1, Reason: "write statement", DurationUS: 1500}},
 		{"replica read", "replica", 1, router.Decision{Target: router.Replica, Reason: "read-only SELECT; reader 1"},
-			routeInfo{Target: "replica", Reader: 1, Reason: "read-only SELECT; reader 1", DurationUS: 1500}},
+			routeInfo{Target: "replica", Reader: 1, Readers: 1, Reason: "read-only SELECT; reader 1", DurationUS: 1500}},
 		{"fallback read", "primary", 0, router.Decision{Target: router.Replica, Reason: "no eligible readers"},
-			routeInfo{Target: "primary", Reason: "no eligible readers", DurationUS: 1500, Fallback: true}},
+			routeInfo{Target: "primary", Readers: 1, Reason: "no eligible readers", DurationUS: 1500, Fallback: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var got routeInfo

@@ -28,7 +28,6 @@ def test_reads_dbmesh_config(tmp_path):
     assert s.audit_url == "postgres://audit@localhost:55435/audit"
     assert (s.proxy_host, s.proxy_port) == ("localhost", 6432)
     assert s.databases == ("demo", "analytics")
-    assert dict(s.readers) == {"demo": 2, "analytics": 0}
     assert (s.host, s.port) == ("127.0.0.1", 8000)
 
 
@@ -40,6 +39,11 @@ def test_reads_dbmesh_config(tmp_path):
 def test_proxy_address_from_listen(tmp_path, listen, want):
     s = load_settings(write(tmp_path, VALID.replace(':6432', listen, 1).replace('":' + listen + '"', f'"{listen}"')), env={})
     assert (s.proxy_host, s.proxy_port) == want
+
+
+def test_dashboard_proxy_addr_overrides_listen(tmp_path):
+    s = load_settings(write(tmp_path, "dashboard_proxy_addr: \"dbmesh-proxy.railway.internal:6432\"\n" + VALID), env={})
+    assert (s.proxy_host, s.proxy_port) == ("dbmesh-proxy.railway.internal", 6432)
 
 
 def test_password_from_env_or_generated(tmp_path):

@@ -403,6 +403,7 @@ var reportedParameters = []string{
 type routeInfo struct {
 	Target     string  `json:"target"`
 	Reader     int     `json:"reader,omitempty"`
+	Readers    int     `json:"readers"` // total readers configured for this database
 	Reason     string  `json:"reason"`
 	LagBytes   *uint64 `json:"lag_bytes,omitempty"` // last monitor sample of the serving reader
 	DurationUS int64   `json:"duration_us"`
@@ -412,9 +413,12 @@ type routeInfo struct {
 func (s *Server) routeDetail(database, target string, reader int, decision router.Decision, elapsed time.Duration) string {
 	info := routeInfo{Target: target, Reader: reader, Reason: decision.Reason, DurationUS: elapsed.Microseconds(),
 		Fallback: decision.Target == router.Replica && reader == 0}
-	if db, ok := s.databases[database]; ok && reader > 0 {
-		lag := db.monitor.Status(reader - 1).LagBytes
-		info.LagBytes = &lag
+	if db, ok := s.databases[database]; ok {
+		info.Readers = len(db.cfg.ReaderURLs)
+		if reader > 0 {
+			lag := db.monitor.Status(reader - 1).LagBytes
+			info.LagBytes = &lag
+		}
 	}
 	data, err := json.Marshal(info)
 	if err != nil {
